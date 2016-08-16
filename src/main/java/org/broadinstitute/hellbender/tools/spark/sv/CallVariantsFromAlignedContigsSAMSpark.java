@@ -77,7 +77,6 @@ public class CallVariantsFromAlignedContigsSAMSpark extends GATKSparkTool {
         CallVariantsFromAlignedContigsSpark.writeVariants(fastaReference, logger, variantContexts, getAuthenticatedGCSOptions(), outputPath);
     }
 
-    @VisibleForTesting
     protected static Tuple2<byte[], Iterable<AlignmentRegion>> convertToAlignmentRegions(final Iterable<GATKRead> reads) {
         final List<GATKRead> gatkReads = IterableUtils.toList(reads);
         final Optional<GATKRead> primaryRead = gatkReads.stream().filter(r -> !(r.isSecondaryAlignment() || r.isSupplementaryAlignment())).findFirst();

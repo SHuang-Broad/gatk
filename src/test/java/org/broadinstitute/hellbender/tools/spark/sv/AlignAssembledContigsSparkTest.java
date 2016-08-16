@@ -31,7 +31,7 @@ public class AlignAssembledContigsSparkTest extends BaseTest {
         final AlignmentRegion region1 = AlignAssembledContigsSpark.parseAlignedAssembledContigLine(line);
         Assert.assertEquals(region1.referenceInterval, new SimpleInterval("1", 7043012, 7044153));
         Assert.assertTrue(region1.forwardStrand);
-        Assert.assertEquals(region1.cigar.toString(), "1141M1357S");
+        Assert.assertEquals(region1.forwardStrandCigar.toString(), "1141M1357S");
         Assert.assertEquals(region1.mqual, 60);
         Assert.assertEquals(region1.startInAssembledContig, 1);
         Assert.assertEquals(region1.endInAssembledContig, 1141);
@@ -41,7 +41,7 @@ public class AlignAssembledContigsSparkTest extends BaseTest {
         final AlignmentRegion region2 = AlignAssembledContigsSpark.parseAlignedAssembledContigLine(line2);
         Assert.assertEquals(region2.referenceInterval, new SimpleInterval("1", 7044151, 7045306));
         Assert.assertTrue(region2.forwardStrand);
-        Assert.assertEquals(region2.cigar.toString(), "1343S1155M");
+        Assert.assertEquals(region2.forwardStrandCigar.toString(), "1343S1155M");
         Assert.assertEquals(region2.mqual, 60);
         Assert.assertEquals(region2.startInAssembledContig, 1344);
         Assert.assertEquals(region2.endInAssembledContig, 2498);

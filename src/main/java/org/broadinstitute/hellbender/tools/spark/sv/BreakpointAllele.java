@@ -5,12 +5,12 @@ import org.broadinstitute.hellbender.utils.SimpleInterval;
 import java.util.Objects;
 
 class BreakpointAllele {
-    SimpleInterval leftAlignedLeftBreakpoint;
-    SimpleInterval leftAlignedRightBreakpoint;
-    String insertedSequence;
-    String homology;
-    boolean fiveToThree;
-    boolean threeToFive;
+    final SimpleInterval leftAlignedLeftBreakpoint;
+    final SimpleInterval leftAlignedRightBreakpoint;
+    final String insertedSequence;
+    final String homology;
+    final boolean fiveToThree;
+    final boolean threeToFive;
 
     public BreakpointAllele(final SimpleInterval leftAlignedLeftBreakpoint, final SimpleInterval leftAlignedRightBreakpoint, final String insertedSequence, final String homology, final boolean fiveToThree, final boolean threeToFive) {
         this.leftAlignedLeftBreakpoint = leftAlignedLeftBreakpoint;

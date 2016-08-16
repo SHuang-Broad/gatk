@@ -77,7 +77,14 @@ class AssembledBreakpoint {
     }
 
     /**
-     *  Parses a tab-delimited assembled breakpoint line into an AssembledBreakpoint object
+     *  Parses a tab-delimited assembled breakpoint line into an AssembledBreakpoint object. Fields should be in the same order as that produced by toString():
+     *
+     *  contigId
+     *  alignmentRegion1.toString()
+     *  alignmentRegion2.toString()
+     *  insertedSequence
+     *  homology
+     *
      */
     public static AssembledBreakpoint fromString(String assembledBreakpointLine) {
         final String[] fields = assembledBreakpointLine.split("\t");

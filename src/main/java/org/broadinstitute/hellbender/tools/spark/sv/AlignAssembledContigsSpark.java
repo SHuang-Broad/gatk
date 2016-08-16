@@ -88,11 +88,11 @@ public class AlignAssembledContigsSpark extends GATKSparkTool {
 
     /**
      * input format is the text representation of an alignment region
-     * @param alignedAssemblyContigLine An input line with the tab-separated fields of an alignment region
+     * @param alignedAssembedContigLine An input line with the tab-separated fields of an alignment region
      * @return A tuple with the breakpoint ID and string representation of an AssembledBreakpoint, or an empty iterator if the line did not have two comma-separated values
      */
-    static AlignmentRegion parseAlignedAssembledContigLine(final String alignedAssemblyContigLine) {
-        final String[] split = alignedAssemblyContigLine.split("\t", -1);
+    static AlignmentRegion parseAlignedAssembledContigLine(final String alignedAssembedContigLine) {
+        final String[] split = alignedAssembedContigLine.split("\t", -1);
         return AlignmentRegion.fromString(split);
     }
 
