@@ -4,7 +4,6 @@ import com.github.lindenb.jbwa.jni.AlnRgn;
 import com.github.lindenb.jbwa.jni.BwaIndex;
 import com.github.lindenb.jbwa.jni.BwaMem;
 import com.github.lindenb.jbwa.jni.ShortRead;
-import com.google.common.annotations.VisibleForTesting;
 import htsjdk.samtools.util.SequenceUtil;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -18,8 +17,6 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
-import java.util.stream.Collector;
-import java.util.stream.Collectors;
 
 import static org.broadinstitute.hellbender.tools.spark.sv.RunSGAViaProcessBuilderOnSpark.ContigsCollection;
 import static org.broadinstitute.hellbender.tools.spark.sv.RunSGAViaProcessBuilderOnSpark.ContigsCollection.ContigID;
@@ -51,7 +48,17 @@ public class ContigAligner implements Closeable {
         log.info("Created BWA MEM");
     }
 
-    public List<AlignmentRegion> alignContigs(String breakpointId, final ContigsCollection contigsCollection) {
+    /**
+     * Takes a collection of assembled contigs and aligns them to the reference with jBWA. Non-canonical
+     * (secondary) alignments are filtered out, preserving the primary and supplementary alignments.
+     * Within the output list, alignments are sorted first by contig (based on the order in which
+     * the contigs were passed in, and then by their start position on the contig).
+     *
+     * @param assemblyId An identifier for the assembly or set of contigs
+     * @param contigsCollection The set of all canonical (primary or supplementary) alignments for the contigs.
+     * @return
+     */
+    public List<AlignmentRegion> alignContigs(final String assemblyId, final ContigsCollection contigsCollection) {
         final List<AlignmentRegion> alignedContigs = new ArrayList<>();
         try {
             for(final Tuple2<ContigID, ContigSequence> contigInfo : contigsCollection.getContents()) {
@@ -63,9 +70,9 @@ public class ContigAligner implements Closeable {
                 // filter out secondary alignments, convert to AlignmentRegion objects and sort by alignment start pos
                 final List<AlignmentRegion> alignmentRegionList = Arrays.stream(alnRgns)
                         .filter(a -> a.getSecondary() < 0)
-                        .map(a -> new AlignmentRegion(breakpointId, contigId, a))
+                        .map(a -> new AlignmentRegion(assemblyId, contigId, a))
                         .sorted(Comparator.comparing(a -> a.startInAssembledContig))
-                        .collect(arrayListCollector(alnRgns.length));
+                        .collect(SVUtils.arrayListCollector(alnRgns.length));
                  alignedContigs.addAll(alignmentRegionList);
             }
         } catch (final IOException e) {
@@ -73,88 +80,6 @@ public class ContigAligner implements Closeable {
         }
 
         return alignedContigs;
-    }
-
-    @VisibleForTesting
-    public static List<AssembledBreakpoint> getAssembledBreakpointsFromAlignmentRegions(final byte[] sequence, final List<AlignmentRegion> alignmentRegionList, final Integer minAlignLength) {
-        final List<AssembledBreakpoint> results = new ArrayList<>(alignmentRegionList.size() - 1);
-        final Iterator<AlignmentRegion> iterator = alignmentRegionList.iterator();
-        final List<String> insertionAlignmentRegions = new ArrayList<>();
-        if ( iterator.hasNext() ) {
-            AlignmentRegion current = iterator.next();
-            while (treatAlignmentRegionAsInsertion(current) && iterator.hasNext()) {
-                current = iterator.next();
-            }
-            while ( iterator.hasNext() ) {
-                final AlignmentRegion next = iterator.next();
-                if (currentAlignmentRegionIsTooSmall(current, next, minAlignLength)) {
-                    continue;
-                }
-
-                if (treatNextAlignmentRegionInPairAsInsertion(current, next, minAlignLength)) {
-                    if (iterator.hasNext()) {
-                        insertionAlignmentRegions.add(next.toPackedString());
-                        // todo: track alignments of skipped regions for classification as duplications, mei's etc.
-                        continue;
-                    } else {
-                        break;
-                    }
-                }
-
-                final AlignmentRegion previous = current;
-                current = next;
-
-                final byte[] sequenceCopy = Arrays.copyOf(sequence, sequence.length);
-
-                String homology = "";
-                if (previous.endInAssembledContig >= current.startInAssembledContig) {
-                    final byte[] homologyBytes = Arrays.copyOfRange(sequenceCopy, current.startInAssembledContig - 1, previous.endInAssembledContig);
-                    if (previous.referenceInterval.getStart() > current.referenceInterval.getStart()) {
-                        SequenceUtil.reverseComplement(homologyBytes, 0, homologyBytes.length);
-                    }
-                    homology = new String(homologyBytes);
-                }
-
-                String insertedSequence = "";
-                if (previous.endInAssembledContig < current.startInAssembledContig - 1) {
-
-                    final int insertionStart;
-                    final int insertionEnd;
-
-                    insertionStart = previous.endInAssembledContig + 1;
-                    insertionEnd = current.startInAssembledContig - 1;
-
-                    final byte[] insertedSequenceBytes = Arrays.copyOfRange(sequenceCopy, insertionStart - 1, insertionEnd);
-                    if (previous.referenceInterval.getStart() > current.referenceInterval.getStart()) {
-                        SequenceUtil.reverseComplement(insertedSequenceBytes, 0, insertedSequenceBytes.length);
-                    }
-                    insertedSequence = new String(insertedSequenceBytes);
-                }
-                final AssembledBreakpoint assembledBreakpoint = new AssembledBreakpoint(current.contigId, previous, current, insertedSequence, homology, insertionAlignmentRegions);
-
-                results.add(assembledBreakpoint);
-            }
-        }
-        return results;
-    }
-
-    private static boolean currentAlignmentRegionIsTooSmall(final AlignmentRegion current, final AlignmentRegion next, final Integer minAlignLength) {
-        return current.referenceInterval.size() - current.overlapOnContig(next) < minAlignLength;
-    }
-
-    protected static boolean treatNextAlignmentRegionInPairAsInsertion(AlignmentRegion current, AlignmentRegion next, final Integer minAlignLength) {
-        return treatAlignmentRegionAsInsertion(next) ||
-                (next.referenceInterval.size() - current.overlapOnContig(next) < minAlignLength) ||
-                current.referenceInterval.contains(next.referenceInterval) ||
-                next.referenceInterval.contains(current.referenceInterval);
-    }
-
-    private static boolean treatAlignmentRegionAsInsertion(final AlignmentRegion next) {
-        return next.mqual < 60;
-    }
-
-    private Collector<AlignmentRegion, ?, ArrayList<AlignmentRegion>> arrayListCollector(final int size) {
-        return Collectors.toCollection( () -> new ArrayList<>(size));
     }
 
     /**

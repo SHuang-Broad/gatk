@@ -8,6 +8,8 @@ import org.broadinstitute.hellbender.utils.gcs.BucketUtils;
 
 import java.io.*;
 import java.util.*;
+import java.util.stream.Collector;
+import java.util.stream.Collectors;
 
 /**
  * Useful scraps of this and that.
@@ -123,5 +125,12 @@ public final class SVUtils {
         int result = 0;
         while ( itr.hasNext() ) { result += 1; itr.next(); }
         return result;
+    }
+
+    /**
+     * Provides a stream collector that will collect items into an array list with a given initial capacity.
+     */
+    static Collector<AlignmentRegion, ?, ArrayList<AlignmentRegion>> arrayListCollector(final int size) {
+        return Collectors.toCollection( () -> new ArrayList<>(size));
     }
 }

@@ -15,7 +15,7 @@ import java.util.Objects;
 class AlignmentRegion {
 
     final String contigId;
-    final String breakpointId;
+    final String assemblyId;
     final Cigar forwardStrandCigar;
     final boolean forwardStrand;
     final SimpleInterval referenceInterval;
@@ -25,9 +25,9 @@ class AlignmentRegion {
     final int assembledContigLength;
     final int mismatches;
 
-    public AlignmentRegion(final String breakpointId, final String contigId, final AlnRgn alnRgn) {
+    public AlignmentRegion(final String assemblyId, final String contigId, final AlnRgn alnRgn) {
         this.contigId = contigId;
-        this.breakpointId = breakpointId;
+        this.assemblyId = assemblyId;
         this.forwardStrand = alnRgn.getStrand() == '+';
         final Cigar alignmentCigar = TextCigarCodec.decode(alnRgn.getCigar());
         this.forwardStrandCigar = forwardStrand ? alignmentCigar : CigarUtils.invertCigar(alignmentCigar);
@@ -39,9 +39,9 @@ class AlignmentRegion {
         this.mismatches = alnRgn.getNm();
     }
 
-    public AlignmentRegion(final String breakpointId, final String contigId, final Cigar forwardStrandCigar, final boolean forwardStrand, final SimpleInterval referenceInterval, final int mqual, final int startInAssembledContig, final int endInAssembledContig, final int mismatches) {
+    public AlignmentRegion(final String assemblyId, final String contigId, final Cigar forwardStrandCigar, final boolean forwardStrand, final SimpleInterval referenceInterval, final int mqual, final int startInAssembledContig, final int endInAssembledContig, final int mismatches) {
         this.contigId = contigId;
-        this.breakpointId = breakpointId;
+        this.assemblyId = assemblyId;
         this.forwardStrandCigar = forwardStrandCigar;
         this.forwardStrand = forwardStrand;
         this.referenceInterval = referenceInterval;
@@ -53,7 +53,7 @@ class AlignmentRegion {
     }
 
     public AlignmentRegion(final GATKRead read) {
-        this.breakpointId = null;
+        this.assemblyId = null;
         this.contigId = read.getName();
         this.forwardStrand = ! read.isReverseStrand();
         this.forwardStrandCigar = forwardStrand ? read.getCigar() : CigarUtils.invertCigar(read.getCigar());
@@ -102,7 +102,7 @@ class AlignmentRegion {
 
     @Override
     public String toString() {
-        return breakpointId +
+        return assemblyId +
                 "\t" +
                 contigId +
                 "\t" +
@@ -128,7 +128,7 @@ class AlignmentRegion {
     /**
      * Parses fields in the same order as they were output in toString:
      *
-     * breakpointId
+     * assemblyId
      * contigId
      * refContig
      * referenceInterval.getContig
@@ -171,14 +171,14 @@ class AlignmentRegion {
                 assembledContigLength == that.assembledContigLength &&
                 mismatches == that.mismatches &&
                 Objects.equals(contigId, that.contigId) &&
-                Objects.equals(breakpointId, that.breakpointId) &&
+                Objects.equals(assemblyId, that.assemblyId) &&
                 Objects.equals(forwardStrandCigar, that.forwardStrandCigar) &&
                 Objects.equals(referenceInterval, that.referenceInterval);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(contigId, breakpointId, forwardStrandCigar, forwardStrand, referenceInterval, mqual, startInAssembledContig, endInAssembledContig, assembledContigLength, mismatches);
+        return Objects.hash(contigId, assemblyId, forwardStrandCigar, forwardStrand, referenceInterval, mqual, startInAssembledContig, endInAssembledContig, assembledContigLength, mismatches);
     }
 
     public String toPackedString() {

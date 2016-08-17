@@ -4,6 +4,9 @@ import org.broadinstitute.hellbender.utils.SimpleInterval;
 
 import java.util.Objects;
 
+/**
+ * This class represents the allele of an SV breakpoint (a novel adjacency between two genomic locations
+ */
 class BreakpointAllele {
     final SimpleInterval leftAlignedLeftBreakpoint;
     final SimpleInterval leftAlignedRightBreakpoint;
@@ -19,6 +22,19 @@ class BreakpointAllele {
         this.homology = homology;
         this.fiveToThree = fiveToThree;
         this.threeToFive = threeToFive;
+    }
+
+    public enum InversionType{
+        INV_3_TO_5, INV_5_TO_3, INV_UNKNOWN
+    }
+
+    public InversionType getInversionType(){
+        if(!fiveToThree && threeToFive){
+            return InversionType.INV_3_TO_5;
+        }else if(fiveToThree && !threeToFive){
+            return InversionType.INV_5_TO_3;
+        }
+        return InversionType.INV_UNKNOWN;
     }
 
     @Override

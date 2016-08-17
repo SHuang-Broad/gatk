@@ -1,6 +1,5 @@
 package org.broadinstitute.hellbender.tools.spark.sv;
 
-import com.google.common.annotations.VisibleForTesting;
 import htsjdk.samtools.util.SequenceUtil;
 import htsjdk.variant.variantcontext.VariantContext;
 import org.apache.commons.collections4.IterableUtils;
@@ -23,10 +22,17 @@ import scala.Tuple2;
 import java.util.List;
 import java.util.Optional;
 
-@CommandLineProgramProperties(summary="Parse SAM records and call SVs",
-        oneLineSummary="Parse SAM records and call SVs",
+/**
+ * This tool takes a SAM file containing the alignments of assembled contigs or long reads to the reference
+ * and searches it for split alignments indicating the presence of structural variations. To do so the tool parses
+ * primary and supplementary alignments; secondary alignments are ignored. To be considered valid evidence of an SV,
+ * two alignments from the same contig must have mapping quality 60, and both alignments must have length greater than
+ * or equal to minAlignmentLength.
+ */
+@CommandLineProgramProperties(summary="Parse a SAM file containing contigs or long reads aligned to the reference, and call SVs",
+        oneLineSummary="Parse a SAM file containing contigs or long reads aligned to the reference, and call SVs",
         programGroup = SparkProgramGroup.class)
-public class CallVariantsFromAlignedContigsSAMSpark extends GATKSparkTool {
+public final class CallVariantsFromAlignedContigsSAMSpark extends GATKSparkTool {
     private static final long serialVersionUID = 1L;
 
     @Argument(doc = "URL of the output path", shortName = "outputPath",
@@ -60,24 +66,15 @@ public class CallVariantsFromAlignedContigsSAMSpark extends GATKSparkTool {
     protected void runTool(final JavaSparkContext ctx) {
         final Broadcast<ReferenceMultiSource> broadcastReference = ctx.broadcast(getReference());
         final JavaPairRDD<Tuple2<String, String>, Iterable<GATKRead>> alignmentsGroupedByName = getReads().mapToPair(r -> new Tuple2<>(new Tuple2<>(r.getName(), r.getName()), r)).groupByKey();
-        final JavaPairRDD<Tuple2<String, String>, Tuple2<byte[], Iterable<AlignmentRegion>>> alignmentRegionsIterable = alignmentsGroupedByName.mapValues(CallVariantsFromAlignedContigsSAMSpark::convertToAlignmentRegions);
+        final JavaPairRDD<Tuple2<String, String>, Tuple2<Iterable<AlignmentRegion>, byte[]>> alignmentRegionsIterable = alignmentsGroupedByName.mapValues(CallVariantsFromAlignedContigsSAMSpark::convertToAlignmentRegions);
+
         final Integer minAlignLengthFinal = minAlignLength;
-        final JavaPairRDD<Tuple2<String, String>, AssembledBreakpoint> alignedBreakpoints = alignmentRegionsIterable.flatMapValues(v -> CallVariantsFromAlignedContigsSpark.assembledBreakpointsFromAlignmentRegions(v._1, v._2, minAlignLengthFinal));
 
-
-        final JavaPairRDD<BreakpointAllele, Tuple2<Tuple2<String, String>, AssembledBreakpoint>> inversionBreakpoints =
-                alignedBreakpoints
-                        .mapToPair(CallVariantsFromAlignedContigsSpark::keyByBreakpointAllele)
-                        .filter(CallVariantsFromAlignedContigsSpark::inversionBreakpointFilter);
-
-
-        final JavaPairRDD<BreakpointAllele, Iterable<Tuple2<Tuple2<String,String>, AssembledBreakpoint>>> groupedBreakpoints = inversionBreakpoints.groupByKey();
-
-        final JavaRDD<VariantContext> variantContexts = groupedBreakpoints.map(breakpoints -> CallVariantsFromAlignedContigsSpark.filterBreakpointsAndProduceVariants(breakpoints, broadcastReference)).cache();
+        final JavaRDD<VariantContext> variantContexts = CallVariantsFromAlignedContigsSpark.callVariantsFromAlignmentRegions(broadcastReference, alignmentRegionsIterable, minAlignLengthFinal);
         CallVariantsFromAlignedContigsSpark.writeVariants(fastaReference, logger, variantContexts, getAuthenticatedGCSOptions(), outputPath);
     }
 
-    protected static Tuple2<byte[], Iterable<AlignmentRegion>> convertToAlignmentRegions(final Iterable<GATKRead> reads) {
+    protected static Tuple2<Iterable<AlignmentRegion>, byte[]> convertToAlignmentRegions(final Iterable<GATKRead> reads) {
         final List<GATKRead> gatkReads = IterableUtils.toList(reads);
         final Optional<GATKRead> primaryRead = gatkReads.stream().filter(r -> !(r.isSecondaryAlignment() || r.isSupplementaryAlignment())).findFirst();
         if (! primaryRead.isPresent()) {
@@ -89,7 +86,8 @@ public class CallVariantsFromAlignedContigsSAMSpark extends GATKSparkTool {
             SequenceUtil.reverseComplement(bases, 0, bases.length);
         }
 
-        Iterable<AlignmentRegion> alignmentRegionIterable = IteratorUtils.asIterable(gatkReads.stream().filter(r -> !r.isSecondaryAlignment()).map(AlignmentRegion::new).iterator());
-        return new Tuple2<>(bases, alignmentRegionIterable);
+        Iterable<AlignmentRegion> alignmentRegionIterable = IteratorUtils.asIterable(gatkReads.stream()
+                .filter(r -> !r.isSecondaryAlignment()).map(AlignmentRegion::new).iterator());
+        return new Tuple2<>(alignmentRegionIterable, bases);
     }
 }

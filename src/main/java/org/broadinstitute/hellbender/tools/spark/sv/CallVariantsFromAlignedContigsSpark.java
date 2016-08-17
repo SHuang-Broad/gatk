@@ -3,6 +3,7 @@ package org.broadinstitute.hellbender.tools.spark.sv;
 import com.google.cloud.dataflow.sdk.options.PipelineOptions;
 import com.google.common.annotations.VisibleForTesting;
 import htsjdk.samtools.SAMSequenceDictionary;
+import htsjdk.samtools.util.SequenceUtil;
 import htsjdk.variant.variantcontext.Allele;
 import htsjdk.variant.variantcontext.VariantContext;
 import htsjdk.variant.variantcontext.VariantContextBuilder;
@@ -20,7 +21,7 @@ import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.broadcast.Broadcast;
 import org.broadinstitute.hellbender.cmdline.Argument;
 import org.broadinstitute.hellbender.cmdline.CommandLineProgramProperties;
-import org.broadinstitute.hellbender.cmdline.programgroups.SparkProgramGroup;
+import org.broadinstitute.hellbender.cmdline.programgroups.StructuralVariationSparkProgramGroup;
 import org.broadinstitute.hellbender.engine.datasources.ReferenceMultiSource;
 import org.broadinstitute.hellbender.engine.datasources.ReferenceWindowFunctions;
 import org.broadinstitute.hellbender.engine.spark.GATKSparkTool;
@@ -34,21 +35,19 @@ import scala.Tuple2;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
+import java.util.*;
 import java.util.stream.Collectors;
 
-import static org.broadinstitute.hellbender.tools.spark.sv.AlignAssembledContigsSpark.getContigsCollectionKeyedByBreakpointId;
+import static org.broadinstitute.hellbender.tools.spark.sv.AlignAssembledContigsSpark.loadContigsCollectionKeyedByAssemblyId;
 
 @CommandLineProgramProperties(summary="Filter breakpoint alignments and call variants.",
         oneLineSummary="Filter breakpoint alignments and call variants",
-        programGroup = SparkProgramGroup.class)
-public class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
+        programGroup = StructuralVariationSparkProgramGroup.class)
+public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
     private static final long serialVersionUID = 1L;
     public static final Integer DEFAULT_MIN_ALIGNMENT_LENGTH = 50;
 
-    @Argument(doc = "URL of the output path", shortName = "outputPath",
+    @Argument(doc = "URI of the output path", shortName = "outputPath",
             fullName = "outputPath", optional = false)
     private String outputPath;
 
@@ -80,38 +79,132 @@ public class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
     protected void runTool(final JavaSparkContext ctx) {
         Broadcast<ReferenceMultiSource> broadcastReference = ctx.broadcast(getReference());
 
-        final JavaRDD<AlignmentRegion> inputAlignedBreakpoints = ctx.textFile(inputAlignments).map(AlignAssembledContigsSpark::parseAlignedAssembledContigLine);
+        final JavaRDD<AlignmentRegion> inputAlignedContigs = ctx.textFile(inputAlignments).map(AlignAssembledContigsSpark::parseAlignedAssembledContigLine);
 
-        final JavaPairRDD<Tuple2<String, String>, Iterable<AlignmentRegion>> alignmentRegionsKeyedByBreakpointAndContig = inputAlignedBreakpoints.mapToPair(alignmentRegion -> new Tuple2<>(new Tuple2<>(alignmentRegion.breakpointId, alignmentRegion.contigId), alignmentRegion)).groupByKey();
+        final JavaPairRDD<Tuple2<String, String>, Iterable<AlignmentRegion>> alignmentRegionsKeyedByBreakpointAndContig = inputAlignedContigs.mapToPair(alignmentRegion -> new Tuple2<>(new Tuple2<>(alignmentRegion.assemblyId, alignmentRegion.contigId), alignmentRegion)).groupByKey();
 
-        final JavaPairRDD<String, ContigsCollection> breakpointIdsToContigsCollection = getContigsCollectionKeyedByBreakpointId(ctx, inputAssemblies).cache();
+        final JavaPairRDD<String, ContigsCollection> assemblyIdsToContigCollections = loadContigsCollectionKeyedByAssemblyId(ctx, inputAssemblies).cache();
 
-        final JavaPairRDD<Tuple2<String, String>, byte[]> contigSequences = breakpointIdsToContigsCollection.flatMapToPair(breakpointIdAndContigsCollection -> {
-            final String breakpointId = breakpointIdAndContigsCollection._1;
-            final ContigsCollection contigsCollection = breakpointIdAndContigsCollection._2;
-            final List<Tuple2<Tuple2<String, String>, byte[]>> contigSequencesKeyedByBreakpoiuntIdAndContigId = contigsCollection.getContents().stream().map(pair -> new Tuple2<>(new Tuple2<>(breakpointId, pair._1.toString()), pair._2.toString().getBytes())).collect(Collectors.toList());
-            return contigSequencesKeyedByBreakpoiuntIdAndContigId;
+        final JavaPairRDD<Tuple2<String, String>, byte[]> contigSequences = assemblyIdsToContigCollections.flatMapToPair(assemblyIdAndContigsCollection -> {
+            final String assemblyId = assemblyIdAndContigsCollection._1;
+            final ContigsCollection contigsCollection = assemblyIdAndContigsCollection._2;
+            final List<Tuple2<Tuple2<String, String>, byte[]>> contigSequencesKeyedByAssemblyIdAndContigId =
+                    contigsCollection.getContents().stream().map(pair -> new Tuple2<>(new Tuple2<>(assemblyId, pair._1.toString()), pair._2.toString().getBytes())).collect(Collectors.toList());
+            return contigSequencesKeyedByAssemblyIdAndContigId;
         });
 
         final JavaPairRDD<Tuple2<String, String>, Tuple2<Iterable<AlignmentRegion>, byte[]>> alignmentRegionsWithContigSequences = alignmentRegionsKeyedByBreakpointAndContig.join(contigSequences);
 
         final Integer minAlignLengthFinal = this.minAlignLength;
-        JavaPairRDD<Tuple2<String, String>, AssembledBreakpoint> assembledBreakpointsByBreakpointIdAndContigId =
-                alignmentRegionsWithContigSequences.flatMapValues(alignmentRegionsAndSequences -> {
-                    return CallVariantsFromAlignedContigsSpark.assembledBreakpointsFromAlignmentRegions(alignmentRegionsAndSequences._2, alignmentRegionsAndSequences._1, minAlignLengthFinal);
-                });
-
-        final JavaPairRDD<BreakpointAllele, Tuple2<Tuple2<String,String>, AssembledBreakpoint>> assembled3To5BreakpointsKeyedByPosition =
-                assembledBreakpointsByBreakpointIdAndContigId
-                        .mapToPair(CallVariantsFromAlignedContigsSpark::keyByBreakpointAllele)
-                        .filter(CallVariantsFromAlignedContigsSpark::inversionBreakpointFilter);
-
-        final JavaPairRDD<BreakpointAllele, Iterable<Tuple2<Tuple2<String,String>, AssembledBreakpoint>>> groupedBreakpoints = assembled3To5BreakpointsKeyedByPosition.groupByKey();
-
-        final JavaRDD<VariantContext> variantContexts = groupedBreakpoints.map(breakpoints -> filterBreakpointsAndProduceVariants(breakpoints, broadcastReference)).cache();
+        final JavaRDD<VariantContext> variantContexts = callVariantsFromAlignmentRegions(broadcastReference, alignmentRegionsWithContigSequences, minAlignLengthFinal);
 
         writeVariants(fastaReference, logger, variantContexts, getAuthenticatedGCSOptions(), outputPath);
 
+    }
+
+    protected static JavaRDD<VariantContext> callVariantsFromAlignmentRegions(final Broadcast<ReferenceMultiSource> broadcastReference, final JavaPairRDD<Tuple2<String, String>, Tuple2<Iterable<AlignmentRegion>, byte[]>> alignmentRegionsWithContigSequences, final Integer minAlignLengthFinal) {
+        JavaPairRDD<Tuple2<String, String>, BreakpointAlignment> assembledBreakpointsByBreakpointIdAndContigId =
+                alignmentRegionsWithContigSequences.flatMapValues(alignmentRegionsAndSequences ->
+                        CallVariantsFromAlignedContigsSpark.assembledBreakpointsFromAlignmentRegions(alignmentRegionsAndSequences._2, alignmentRegionsAndSequences._1, minAlignLengthFinal));
+
+        final JavaPairRDD<BreakpointAllele, Tuple2<Tuple2<String,String>, BreakpointAlignment>> assembled3To5BreakpointsKeyedByPosition =
+                assembledBreakpointsByBreakpointIdAndContigId
+                        .mapToPair(CallVariantsFromAlignedContigsSpark::keyByBreakpointAllele)
+                        .filter(CallVariantsFromAlignedContigsSpark::inversionBreakpointAlleleFilter);
+
+        final JavaPairRDD<BreakpointAllele, Iterable<Tuple2<Tuple2<String,String>, BreakpointAlignment>>> groupedBreakpoints = assembled3To5BreakpointsKeyedByPosition.groupByKey();
+
+        return groupedBreakpoints.map(breakpoints -> filterBreakpointsAndProduceVariants(breakpoints, broadcastReference)).cache();
+    }
+
+    static List<BreakpointAlignment> getBreakpointAlignmentsFromAlignmentRegions(final byte[] sequence, final List<AlignmentRegion> alignmentRegionList, final Integer minAlignLength) {
+        if (alignmentRegionList.isEmpty()) {
+            return new ArrayList<>();
+        }
+        final List<BreakpointAlignment> results = new ArrayList<>(alignmentRegionList.size() - 1);
+        final Iterator<AlignmentRegion> iterator = alignmentRegionList.iterator();
+        final List<String> insertionAlignmentRegions = new ArrayList<>();
+        if ( iterator.hasNext() ) {
+            AlignmentRegion current = iterator.next();
+            while (treatAlignmentRegionAsInsertion(current) && iterator.hasNext()) {
+                current = iterator.next();
+            }
+            while ( iterator.hasNext() ) {
+                final AlignmentRegion next = iterator.next();
+                if (currentAlignmentRegionIsTooSmall(current, next, minAlignLength)) {
+                    continue;
+                }
+
+                if (treatNextAlignmentRegionInPairAsInsertion(current, next, minAlignLength)) {
+                    if (iterator.hasNext()) {
+                        insertionAlignmentRegions.add(next.toPackedString());
+                        // todo: track alignments of skipped regions for classification as duplications, mei's etc.
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+
+                final AlignmentRegion previous = current;
+                current = next;
+
+                final byte[] sequenceCopy = Arrays.copyOf(sequence, sequence.length);
+
+                String homology = getHomology(current, previous, sequenceCopy);
+                String insertedSequence = getInsertedSequence(current, previous, sequenceCopy);
+
+                final BreakpointAlignment breakpointAlignment = new BreakpointAlignment(current.contigId, previous, current, insertedSequence, homology, insertionAlignmentRegions);
+
+                results.add(breakpointAlignment);
+            }
+        }
+        return results;
+    }
+
+    private static String getInsertedSequence(final AlignmentRegion current, final AlignmentRegion previous, final byte[] sequenceCopy) {
+        String insertedSequence = "";
+        if (previous.endInAssembledContig < current.startInAssembledContig - 1) {
+
+            final int insertionStart;
+            final int insertionEnd;
+
+            insertionStart = previous.endInAssembledContig + 1;
+            insertionEnd = current.startInAssembledContig - 1;
+
+            final byte[] insertedSequenceBytes = Arrays.copyOfRange(sequenceCopy, insertionStart - 1, insertionEnd);
+            if (previous.referenceInterval.getStart() > current.referenceInterval.getStart()) {
+                SequenceUtil.reverseComplement(insertedSequenceBytes, 0, insertedSequenceBytes.length);
+            }
+            insertedSequence = new String(insertedSequenceBytes);
+        }
+        return insertedSequence;
+    }
+
+    private static String getHomology(final AlignmentRegion current, final AlignmentRegion previous, final byte[] sequenceCopy) {
+        String homology = "";
+        if (previous.endInAssembledContig >= current.startInAssembledContig) {
+            final byte[] homologyBytes = Arrays.copyOfRange(sequenceCopy, current.startInAssembledContig - 1, previous.endInAssembledContig);
+            if (previous.referenceInterval.getStart() > current.referenceInterval.getStart()) {
+                SequenceUtil.reverseComplement(homologyBytes, 0, homologyBytes.length);
+            }
+            homology = new String(homologyBytes);
+        }
+        return homology;
+    }
+
+    private static boolean currentAlignmentRegionIsTooSmall(final AlignmentRegion current, final AlignmentRegion next, final Integer minAlignLength) {
+        return current.referenceInterval.size() - current.overlapOnContig(next) < minAlignLength;
+    }
+
+    protected static boolean treatNextAlignmentRegionInPairAsInsertion(AlignmentRegion current, AlignmentRegion next, final Integer minAlignLength) {
+        return treatAlignmentRegionAsInsertion(next) ||
+                (next.referenceInterval.size() - current.overlapOnContig(next) < minAlignLength) ||
+                current.referenceInterval.contains(next.referenceInterval) ||
+                next.referenceInterval.contains(current.referenceInterval);
+    }
+
+    private static boolean treatAlignmentRegionAsInsertion(final AlignmentRegion next) {
+        return next.mqual < 60;
     }
 
     public static void writeVariants(final String fastaReference, final Logger logger, final JavaRDD<VariantContext> variantContexts, final PipelineOptions pipelineOptions, final String outputPath) {
@@ -170,24 +263,24 @@ public class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         return vcWriterBuilder.build();
     }
 
-    public static Iterable<AssembledBreakpoint> assembledBreakpointsFromAlignmentRegions(final byte[] contigSequence, final Iterable<AlignmentRegion> alignmentRegionsIterable, final Integer minAlignLength) {
+    public static Iterable<BreakpointAlignment> assembledBreakpointsFromAlignmentRegions(final byte[] contigSequence, final Iterable<AlignmentRegion> alignmentRegionsIterable, final Integer minAlignLength) {
         final List<AlignmentRegion> alignmentRegions = IterableUtils.toList(alignmentRegionsIterable);
         if (alignmentRegions.size() > 1) {
             alignmentRegions.sort(Comparator.comparing(a -> a.startInAssembledContig));
         }
-        return ContigAligner.getAssembledBreakpointsFromAlignmentRegions(contigSequence, alignmentRegions, minAlignLength);
+        return getBreakpointAlignmentsFromAlignmentRegions(contigSequence, alignmentRegions, minAlignLength);
     }
 
     @VisibleForTesting
-    public static VariantContext filterBreakpointsAndProduceVariants(final Tuple2<BreakpointAllele, Iterable<Tuple2<Tuple2<String,String>, AssembledBreakpoint>>> assembledBreakpointsPerAllele, final Broadcast<ReferenceMultiSource> broadcastReference) throws IOException {
+    public static VariantContext filterBreakpointsAndProduceVariants(final Tuple2<BreakpointAllele, Iterable<Tuple2<Tuple2<String,String>, BreakpointAlignment>>> assembledBreakpointsPerAllele, final Broadcast<ReferenceMultiSource> broadcastReference) throws IOException {
         int numAssembledBreakpoints = 0;
         int highMqMappings = 0;
         int midMqMappings = 0;
         int lowMqMappings = 0;
         int maxAlignLength = 0;
 
-        final Iterable<Tuple2<Tuple2<String,String>, AssembledBreakpoint>> assembledBreakpoints = assembledBreakpointsPerAllele._2;
-        final List<Tuple2<Tuple2<String, String>, AssembledBreakpoint>> assembledBreakpointsList = IterableUtils.toList(assembledBreakpoints);
+        final Iterable<Tuple2<Tuple2<String,String>, BreakpointAlignment>> assembledBreakpoints = assembledBreakpointsPerAllele._2;
+        final List<Tuple2<Tuple2<String, String>, BreakpointAlignment>> assembledBreakpointsList = IterableUtils.toList(assembledBreakpoints);
         final int numBreakpoints = assembledBreakpointsList.size();
         final List<Integer> mqs = new ArrayList<>(numBreakpoints);
         final List<Integer> alignLengths = new ArrayList<>(numBreakpoints);
@@ -196,10 +289,10 @@ public class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         final List<String> assembledContigIds = new ArrayList<>(numBreakpoints);
 
 
-        for (final Tuple2<Tuple2<String,String>, AssembledBreakpoint> assembledBreakpointPair : assembledBreakpointsList) {
-            final AssembledBreakpoint assembledBreakpoint = assembledBreakpointPair._2;
+        for (final Tuple2<Tuple2<String,String>, BreakpointAlignment> assembledBreakpointPair : assembledBreakpointsList) {
+            final BreakpointAlignment breakpointAlignment = assembledBreakpointPair._2;
             numAssembledBreakpoints = numAssembledBreakpoints + 1;
-            final int assembledBreakpointMapq = Math.min(assembledBreakpoint.region1.mqual, assembledBreakpoint.region2.mqual);
+            final int assembledBreakpointMapq = Math.min(breakpointAlignment.region1.mqual, breakpointAlignment.region2.mqual);
             if (assembledBreakpointMapq == 60) {
                 highMqMappings = highMqMappings + 1;
             } else if (assembledBreakpointMapq > 0) {
@@ -209,12 +302,12 @@ public class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
             }
             mqs.add(assembledBreakpointMapq);
             final int assembledBreakpointAlignmentLength =
-                    Math.min(assembledBreakpoint.region1.referenceInterval.size(),
-                            assembledBreakpoint.region2.referenceInterval.size()) - assembledBreakpoint.region1.overlapOnContig(assembledBreakpoint.region2);
+                    Math.min(breakpointAlignment.region1.referenceInterval.size(),
+                            breakpointAlignment.region2.referenceInterval.size()) - breakpointAlignment.region1.overlapOnContig(breakpointAlignment.region2);
             alignLengths.add(assembledBreakpointAlignmentLength);
             maxAlignLength = Math.max(maxAlignLength, assembledBreakpointAlignmentLength);
             breakpointIds.add(assembledBreakpointPair._1._1);
-            assembledContigIds.add(assembledBreakpoint.contigId);
+            assembledContigIds.add(breakpointAlignment.contigId);
         }
 
         return createVariant(numAssembledBreakpoints, highMqMappings, mqs, alignLengths, maxAlignLength, breakpointAllele, breakpointIds, assembledContigIds, broadcastReference.getValue());
@@ -258,11 +351,11 @@ public class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
             vcBuilder = vcBuilder.attribute(GATKSVVCFHeaderLines.HOMOLOGY_LENGTH, breakpointAllele.homology.length());
         }
 
-        if (is5To3Inversion(breakpointAllele)) {
+        if (breakpointAllele.getInversionType() == BreakpointAllele.InversionType.INV_5_TO_3) {
             vcBuilder = vcBuilder.attribute(GATKSVVCFHeaderLines.INV_5_TO_3, "");
         }
 
-        if (is3To5Inversion(breakpointAllele)) {
+        if (breakpointAllele.getInversionType() == BreakpointAllele.InversionType.INV_3_TO_5) {
             vcBuilder = vcBuilder.attribute(GATKSVVCFHeaderLines.INV_3_TO_5, "");
         }
 
@@ -270,35 +363,19 @@ public class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         return vcBuilder.make();
     }
 
-    private static boolean is3To5Inversion(final BreakpointAllele breakpointAllele) {
-        return ! breakpointAllele.fiveToThree && breakpointAllele.threeToFive;
-    }
-
-    private static boolean is5To3Inversion(final BreakpointAllele breakpointAllele) {
-        return breakpointAllele.fiveToThree && ! breakpointAllele.threeToFive;
-    }
 
     private static String getInversionId(final BreakpointAllele breakpointAllele) {
-        final String invType;
-        if (is5To3Inversion(breakpointAllele)) {
-            invType = "INV_5_TO_3";
-        } else if (is3To5Inversion(breakpointAllele)) {
-            invType = "INV_3_TO_5";
-        } else {
-            // I don't think this should happen
-            invType = "INV_UNKNOWN";
-        }
-
+        final String invType = breakpointAllele.getInversionType().name();
         return invType + "_" + breakpointAllele.leftAlignedLeftBreakpoint.getContig() + "_" + breakpointAllele.leftAlignedLeftBreakpoint.getStart() + "_" + breakpointAllele.leftAlignedRightBreakpoint.getStart();
     }
 
 
-    public static Tuple2<BreakpointAllele, Tuple2<Tuple2<String,String>, AssembledBreakpoint>> keyByBreakpointAllele(final Tuple2<Tuple2<String,String>, AssembledBreakpoint> breakpointIdAndAssembledBreakpoint) {
+    static Tuple2<BreakpointAllele, Tuple2<Tuple2<String,String>, BreakpointAlignment>> keyByBreakpointAllele(final Tuple2<Tuple2<String, String>, BreakpointAlignment> breakpointIdAndAssembledBreakpoint) {
         final BreakpointAllele breakpointAllele = breakpointIdAndAssembledBreakpoint._2.getBreakpointAllele();
         return new Tuple2<>(breakpointAllele, new Tuple2<>(breakpointIdAndAssembledBreakpoint._1, breakpointIdAndAssembledBreakpoint._2));
     }
 
-    public static Boolean inversionBreakpointFilter(final Tuple2<BreakpointAllele, Tuple2<Tuple2<String,String>,AssembledBreakpoint>> breakpointAlleleTuple2Tuple2) {
+    static Boolean inversionBreakpointAlleleFilter(final Tuple2<BreakpointAllele, Tuple2<Tuple2<String, String>, BreakpointAlignment>> breakpointAlleleTuple2Tuple2) {
         final BreakpointAllele breakpointAllele = breakpointAlleleTuple2Tuple2._1;
         return breakpointAllele.leftAlignedLeftBreakpoint.getContig().equals(breakpointAllele.leftAlignedRightBreakpoint.getContig()) && (breakpointAllele.fiveToThree || breakpointAllele.threeToFive);
     }

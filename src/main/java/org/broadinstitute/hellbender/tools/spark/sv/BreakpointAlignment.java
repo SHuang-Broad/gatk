@@ -1,16 +1,16 @@
 package org.broadinstitute.hellbender.tools.spark.sv;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
-import org.omg.SendingContext.RunTime;
 
 import java.util.Arrays;
 import java.util.List;
 
 /**
- * Holds information about a split alignment of a contig, which may represent an SV breakpoint. Each AssembledBreakpoint
+ * Holds information about a split alignment of a contig, which may represent an SV breakpoint. Each BreakpointAlignment
  * represents the junction on the contig of two aligned regions. For example, if a contig aligns to three different regions
- * of the genome (with one primary and two supplementary alignment records), there will be two AssembledBreakpoint
+ * of the genome (with one primary and two supplementary alignment records), there will be two BreakpointAlignment
  * objects created, one to represent each junction between alignment regions:
  *
  * Example Contig:
@@ -46,7 +46,7 @@ import java.util.List;
  * Homology:
  *  AC
  */
-class AssembledBreakpoint {
+class BreakpointAlignment {
     String contigId;
     AlignmentRegion region1;
     AlignmentRegion region2;
@@ -54,7 +54,7 @@ class AssembledBreakpoint {
     String homology;
     List<String> insertionMappings;
 
-    public AssembledBreakpoint(final String contigId, final AlignmentRegion region1, final AlignmentRegion region2, final String insertedSequence, final String homology, final List<String> insertionMappings) {
+    public BreakpointAlignment(final String contigId, final AlignmentRegion region1, final AlignmentRegion region2, final String insertedSequence, final String homology, final List<String> insertionMappings) {
         this.contigId = contigId;
         this.region1 = region1;
         this.region2 = region2;
@@ -77,7 +77,7 @@ class AssembledBreakpoint {
     }
 
     /**
-     *  Parses a tab-delimited assembled breakpoint line into an AssembledBreakpoint object. Fields should be in the same order as that produced by toString():
+     *  Parses a tab-delimited assembled breakpoint line into an BreakpointAlignment object. Fields should be in the same order as that produced by toString():
      *
      *  contigId
      *  alignmentRegion1.toString()
@@ -86,12 +86,12 @@ class AssembledBreakpoint {
      *  homology
      *
      */
-    public static AssembledBreakpoint fromString(String assembledBreakpointLine) {
+    public static BreakpointAlignment fromString(String assembledBreakpointLine) {
         final String[] fields = assembledBreakpointLine.split("\t");
         return fromFields(fields);
     }
 
-    public static AssembledBreakpoint fromFields(final String[] fields) {
+    private static BreakpointAlignment fromFields(final String[] fields) {
         try {
             final String contigId = fields[0].replaceFirst("^>","");
             final String[] alignmentRegion1Fields = Arrays.copyOfRange(fields, 1, 10);
@@ -101,14 +101,14 @@ class AssembledBreakpoint {
             final String insertedSequence = fields[19].equals("NA") ? "" : fields[19];
             final String homology = fields[20].equals("NA") ? "" : fields[20];
             final List<String> insertionMappings = Arrays.asList(fields[21].split(";"));
-            return new AssembledBreakpoint(contigId, alignmentRegion1, alignmentRegion2, insertedSequence, homology, insertionMappings);
+            return new BreakpointAlignment(contigId, alignmentRegion1, alignmentRegion2, insertedSequence, homology, insertionMappings);
         } catch (final NumberFormatException nfe) {
             throw new GATKException(Arrays.toString(fields), nfe);
         }
 
     }
 
-    public AlignmentRegion getLeftAlignmentRegion() {
+    private AlignmentRegion getLeftAlignmentRegion() {
         if (region1.referenceInterval.getStart() < region2.referenceInterval.getStart()) {
             return region1;
         } else {
@@ -116,7 +116,8 @@ class AssembledBreakpoint {
         }
     }
 
-    public SimpleInterval getLeftAlignedLeftBreakpointOnAssembledContig() {
+    @VisibleForTesting
+    SimpleInterval getLeftAlignedLeftBreakpointOnAssembledContig() {
         if (region1.equals(getLeftAlignmentRegion())) {
             final int position = region1.forwardStrand ? region1.referenceInterval.getEnd() - homology.length() : region1.referenceInterval.getStart();
             return new SimpleInterval(region1.referenceInterval.getContig(), position, position);
@@ -126,7 +127,8 @@ class AssembledBreakpoint {
         }
     }
 
-    public SimpleInterval getLeftAlignedRightBreakpointOnAssembledContig() {
+    @VisibleForTesting
+    SimpleInterval getLeftAlignedRightBreakpointOnAssembledContig() {
         if (region1.equals(getLeftAlignmentRegion())) {
             final int position = region2.forwardStrand ? region2.referenceInterval.getStart() + homology.length() : region2.referenceInterval.getEnd();
             return new SimpleInterval(region2.referenceInterval.getContig(), position, position);
@@ -136,32 +138,36 @@ class AssembledBreakpoint {
         }
     }
 
+    /**
+     * Returns the canonical representation of the breakpoint implied by this split contig alignment,
+     * including whether it is a 3-5 or 5-3 inversion, and the homology and inserted sequence at the
+     * breakpoint. The two intervals returned are 1bp intervals indicating the exact breakpoint
+     * location. If there is homology at the breakpoint, the breakpoint locations will be left
+     * aligned.
+     * @return
+     */
     public BreakpointAllele getBreakpointAllele() {
-        try {
-            final SimpleInterval leftAlignedLeftBreakpointOnAssembledContig = getLeftAlignedLeftBreakpointOnAssembledContig();
-            final SimpleInterval leftAlignedRightBreakpointOnAssembledContig = getLeftAlignedRightBreakpointOnAssembledContig();
 
-            final boolean isFiveToThreeInversion;
-            final boolean isThreeToFiveInversion;
+        final SimpleInterval leftAlignedLeftBreakpointOnAssembledContig = getLeftAlignedLeftBreakpointOnAssembledContig();
+        final SimpleInterval leftAlignedRightBreakpointOnAssembledContig = getLeftAlignedRightBreakpointOnAssembledContig();
 
-            if (region1.equals(getLeftAlignmentRegion())) {
-                isFiveToThreeInversion = region1.forwardStrand && !region2.forwardStrand;
-                isThreeToFiveInversion = !region1.forwardStrand && region2.forwardStrand;
-            } else {
-                isFiveToThreeInversion = !region1.forwardStrand && region2.forwardStrand;
-                isThreeToFiveInversion = region1.forwardStrand && !region2.forwardStrand;
-            }
+        final boolean isFiveToThreeInversion;
+        final boolean isThreeToFiveInversion;
 
-            if (!leftAlignedLeftBreakpointOnAssembledContig.getContig().equals(leftAlignedRightBreakpointOnAssembledContig.getContig())) {
-                return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion);
-            } else if (leftAlignedLeftBreakpointOnAssembledContig.getStart() < leftAlignedRightBreakpointOnAssembledContig.getStart()) {
-                return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion);
-            } else {
-                return new BreakpointAllele(leftAlignedRightBreakpointOnAssembledContig, leftAlignedLeftBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion);
-            }
-        } catch (RuntimeException e) {
-            System.err.println("Error constructing breakpoint allele for AB:\n" + this.toString());
-            throw e;
+        if (region1.equals(getLeftAlignmentRegion())) {
+            isFiveToThreeInversion = region1.forwardStrand && !region2.forwardStrand;
+            isThreeToFiveInversion = !region1.forwardStrand && region2.forwardStrand;
+        } else {
+            isFiveToThreeInversion = !region1.forwardStrand && region2.forwardStrand;
+            isThreeToFiveInversion = region1.forwardStrand && !region2.forwardStrand;
+        }
+
+        if (!leftAlignedLeftBreakpointOnAssembledContig.getContig().equals(leftAlignedRightBreakpointOnAssembledContig.getContig())) {
+            return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion);
+        } else if (leftAlignedLeftBreakpointOnAssembledContig.getStart() < leftAlignedRightBreakpointOnAssembledContig.getStart()) {
+            return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion);
+        } else {
+            return new BreakpointAllele(leftAlignedRightBreakpointOnAssembledContig, leftAlignedLeftBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion);
         }
     }
 }

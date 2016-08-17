@@ -52,13 +52,13 @@ public class CallVariantsFromAlignedContigsSAMSparkTest extends BaseTest {
         reads.add(read2);
         reads.add(read3);
 
-        final Tuple2<byte[], Iterable<AlignmentRegion>> alignmentRegionResults = CallVariantsFromAlignedContigsSAMSpark.convertToAlignmentRegions(reads);
-        assertEquals(alignmentRegionResults._1(), read2.getBases());
+        final Tuple2<Iterable<AlignmentRegion>, byte[]> alignmentRegionResults = CallVariantsFromAlignedContigsSAMSpark.convertToAlignmentRegions(reads);
+        assertEquals(alignmentRegionResults._2(), read2.getBases());
 
-        final List<AlignmentRegion> alignmentRegions = IterableUtils.toList(alignmentRegionResults._2);
+        final List<AlignmentRegion> alignmentRegions = IterableUtils.toList(alignmentRegionResults._1);
         assertEquals(alignmentRegions.size(), 3);
 
-        final byte[] read4Bytes = ContigAlignerTest.LONG_CONTIG1.getBytes();
+        final byte[] read4Bytes = CallVariantsFromAlignedContigsSparkTest.LONG_CONTIG1.getBytes();
         final String read4Seq = new String(read4Bytes);
         final byte[] read4Quals = new byte[read4Seq.length()];
         Arrays.fill(read4Quals, (byte)'A');
@@ -83,11 +83,11 @@ public class CallVariantsFromAlignedContigsSAMSparkTest extends BaseTest {
         reads2.add(read4);
         reads2.add(read5);
 
-        final Tuple2<byte[], Iterable<AlignmentRegion>> alignmentRegionResults2 = CallVariantsFromAlignedContigsSAMSpark.convertToAlignmentRegions(reads2);
+        final Tuple2<Iterable<AlignmentRegion>, byte[]> alignmentRegionResults2 = CallVariantsFromAlignedContigsSAMSpark.convertToAlignmentRegions(reads2);
         // these should be the reverse complements of each other
-        assertEquals(alignmentRegionResults2._1().length, read4.getBases().length);
+        assertEquals(alignmentRegionResults2._2().length, read4.getBases().length);
 
-        final List<AlignmentRegion> alignmentRegions2 = IterableUtils.toList(alignmentRegionResults2._2);
+        final List<AlignmentRegion> alignmentRegions2 = IterableUtils.toList(alignmentRegionResults2._1);
         assertEquals(alignmentRegions2.size(), 2);
 
         final AlignmentRegion alignmentRegion4 = alignmentRegions2.get(0);
