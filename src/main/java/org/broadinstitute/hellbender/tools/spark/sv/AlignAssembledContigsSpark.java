@@ -11,7 +11,6 @@ import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.StructuralVariationSparkProgramGroup;
 import org.broadinstitute.hellbender.engine.spark.GATKSparkTool;
 import org.broadinstitute.hellbender.exceptions.GATKException;
-import org.broadinstitute.hellbender.tools.spark.sv.RunSGAViaProcessBuilderOnSpark.ContigsCollection;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -50,10 +49,10 @@ public final class AlignAssembledContigsSpark extends GATKSparkTool {
     @Override
     protected void runTool(final JavaSparkContext ctx) {
 
-        final JavaPairRDD<String, ContigsCollection> breakpointIdsToContigsCollection = loadContigsCollectionKeyedByAssemblyId(ctx, input).cache();
+        final JavaPairRDD<String, ContigsCollection> breakpointIdsToContigsCollection = ContigsCollection.loadContigsCollectionKeyedByAssemblyId(ctx, input).cache();
 
-        final long numInputPartitions = breakpointIdsToContigsCollection.count();
-        final int numPartitions = Math.max(ctx.defaultParallelism(), (int) Math.ceil((double) numInputPartitions / (double) NUM_ASSEMBLIES_PER_PARTITION));
+        final long numInputAssemblies = breakpointIdsToContigsCollection.count();
+        final int numPartitions = Math.max(ctx.defaultParallelism(), (int) Math.ceil((double) numInputAssemblies / (double) NUM_ASSEMBLIES_PER_PARTITION));
 
         final String referenceFileName = referenceArguments.getReferenceFileName();
 
@@ -74,30 +73,6 @@ public final class AlignAssembledContigsSpark extends GATKSparkTool {
 
         });
         allContigAlignments.saveAsTextFile(output);
-    }
-
-    /**
-     * Loads an RDD of {@link ContigsCollection} objects keyed by assembly ID from disk. The input file
-     * should be the output of as RunSGAViaProcessBuilderOnSpark.
-     */
-    static JavaPairRDD<String, ContigsCollection> loadContigsCollectionKeyedByAssemblyId(final JavaSparkContext ctx, final String inputPath) {
-        final JavaRDD<String> inputAssemblies = ctx.textFile(inputPath).cache();
-
-        final JavaPairRDD<String, String> contigCollectionByBreakpointId =
-                inputAssemblies
-                        .flatMapToPair(RunSGAViaProcessBuilderOnSpark::splitAssemblyLine);
-
-        return contigCollectionByBreakpointId.mapValues(ContigsCollection::fromPackedFasta);
-    }
-
-    /**
-     * input format is the text representation of an alignment region
-     * @param alignedAssembedContigLine An input line with the tab-separated fields of an alignment region
-     * @return A tuple with the breakpoint ID and string representation of an BreakpointAlignment, or an empty iterator if the line did not have two comma-separated values
-     */
-    static AlignmentRegion parseAlignedAssembledContigLine(final String alignedAssembedContigLine) {
-        final String[] split = alignedAssembedContigLine.split("\t", -1);
-        return AlignmentRegion.fromString(split);
     }
 
 }

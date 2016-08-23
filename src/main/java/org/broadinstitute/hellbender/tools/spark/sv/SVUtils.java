@@ -130,7 +130,7 @@ public final class SVUtils {
     /**
      * Provides a stream collector that will collect items into an array list with a given initial capacity.
      */
-    static Collector<AlignmentRegion, ?, ArrayList<AlignmentRegion>> arrayListCollector(final int size) {
+    static <T> Collector<T, ?, ArrayList<T>> arrayListCollector(final int size) {
         return Collectors.toCollection( () -> new ArrayList<>(size));
     }
 }

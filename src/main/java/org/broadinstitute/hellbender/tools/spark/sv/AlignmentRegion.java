@@ -19,7 +19,7 @@ class AlignmentRegion {
     final Cigar forwardStrandCigar;
     final boolean forwardStrand;
     final SimpleInterval referenceInterval;
-    final int mqual;
+    final int mapqual;
     final int startInAssembledContig;
     final int endInAssembledContig;
     final int assembledContigLength;
@@ -32,20 +32,20 @@ class AlignmentRegion {
         final Cigar alignmentCigar = TextCigarCodec.decode(alnRgn.getCigar());
         this.forwardStrandCigar = forwardStrand ? alignmentCigar : CigarUtils.invertCigar(alignmentCigar);
         this.referenceInterval = new SimpleInterval(alnRgn.getChrom(), (int) alnRgn.getPos() + 1, (int) (alnRgn.getPos() + 1 + forwardStrandCigar.getReferenceLength()));
-        this.mqual = alnRgn.getMQual();
+        this.mapqual = alnRgn.getMQual();
         this.assembledContigLength = forwardStrandCigar.getReadLength();
         this.startInAssembledContig = startOfAlignmentInContig(forwardStrandCigar);
         this.endInAssembledContig = endOfAlignmentInContig(assembledContigLength, forwardStrandCigar);
         this.mismatches = alnRgn.getNm();
     }
 
-    public AlignmentRegion(final String assemblyId, final String contigId, final Cigar forwardStrandCigar, final boolean forwardStrand, final SimpleInterval referenceInterval, final int mqual, final int startInAssembledContig, final int endInAssembledContig, final int mismatches) {
+    public AlignmentRegion(final String assemblyId, final String contigId, final Cigar forwardStrandCigar, final boolean forwardStrand, final SimpleInterval referenceInterval, final int mapqual, final int startInAssembledContig, final int endInAssembledContig, final int mismatches) {
         this.contigId = contigId;
         this.assemblyId = assemblyId;
         this.forwardStrandCigar = forwardStrandCigar;
         this.forwardStrand = forwardStrand;
         this.referenceInterval = referenceInterval;
-        this.mqual = mqual;
+        this.mapqual = mapqual;
         this.startInAssembledContig = startInAssembledContig;
         this.endInAssembledContig = endInAssembledContig;
         this.assembledContigLength = forwardStrandCigar.getReadLength();
@@ -61,7 +61,7 @@ class AlignmentRegion {
         this.assembledContigLength = forwardStrandCigar.getReadLength() + getTotalHardClipping(forwardStrandCigar);
         this.startInAssembledContig = startOfAlignmentInContig(forwardStrandCigar);
         this.endInAssembledContig = endOfAlignmentInContig(assembledContigLength, forwardStrandCigar);
-        this.mqual = read.getMappingQuality();
+        this.mapqual = read.getMappingQuality();
         if (read.hasAttribute("NM")) {
             this.mismatches = read.getAttributeAsInteger("NM");
         } else {
@@ -75,6 +75,12 @@ class AlignmentRegion {
 
     private static int getTotalHardClipping(final Cigar cigar) {
         final List<CigarElement> cigarElements = cigar.getCigarElements();
+        if (cigarElements.size() == 0) {
+            return 0;
+        }
+        if (cigarElements.size() == 1) {
+            return cigarElements.get(0).getOperator() == CigarOperator.HARD_CLIP ? cigarElements.get(0).getLength() : 0;
+        }
         return (cigarElements.get(0).getOperator() == CigarOperator.HARD_CLIP ? cigarElements.get(0).getLength() : 0) +
                 (cigarElements.get(cigarElements.size() - 1).getOperator() == CigarOperator.HARD_CLIP ? cigarElements.get(cigarElements.size() - 1).getLength() : 0);
     }
@@ -88,16 +94,17 @@ class AlignmentRegion {
     }
 
     private static int getClippedBases(final boolean fromStart, final Cigar cigar) {
-        int posInContig = 0;
+        int result = 0;
         int j = fromStart ? 0 : cigar.getCigarElements().size() - 1;
         final int offset = fromStart ? 1 : -1;
         CigarElement ce = cigar.getCigarElement(j);
         while (ce.getOperator().isClipping()) {
-            posInContig += ce.getLength();
+            result += ce.getLength();
             j += offset;
+            if ( j < 0 || j >= cigar.getCigarElements().size() ) break;
             ce = cigar.getCigarElement(j);
         }
-        return posInContig;
+        return result;
     }
 
     @Override
@@ -116,7 +123,7 @@ class AlignmentRegion {
                 "\t" +
                 forwardStrandCigar.toString() +
                 "\t" +
-                mqual +
+                mapqual +
                 "\t" +
                 startInAssembledContig +
                 "\t" +
@@ -165,7 +172,7 @@ class AlignmentRegion {
         if (o == null || getClass() != o.getClass()) return false;
         AlignmentRegion that = (AlignmentRegion) o;
         return forwardStrand == that.forwardStrand &&
-                mqual == that.mqual &&
+                mapqual == that.mapqual &&
                 startInAssembledContig == that.startInAssembledContig &&
                 endInAssembledContig == that.endInAssembledContig &&
                 assembledContigLength == that.assembledContigLength &&
@@ -178,10 +185,10 @@ class AlignmentRegion {
 
     @Override
     public int hashCode() {
-        return Objects.hash(contigId, assemblyId, forwardStrandCigar, forwardStrand, referenceInterval, mqual, startInAssembledContig, endInAssembledContig, assembledContigLength, mismatches);
+        return Objects.hash(contigId, assemblyId, forwardStrandCigar, forwardStrand, referenceInterval, mapqual, startInAssembledContig, endInAssembledContig, assembledContigLength, mismatches);
     }
 
     public String toPackedString() {
-        return "" + startInAssembledContig + "-" + endInAssembledContig + ":" + referenceInterval.getContig() + ',' + referenceInterval.getStart() + ',' + (forwardStrand ? '+' : '-') + ',' + TextCigarCodec.encode(forwardStrandCigar) + ',' + mqual + ',' + mismatches;
+        return "" + startInAssembledContig + "-" + endInAssembledContig + ":" + referenceInterval.getContig() + ',' + referenceInterval.getStart() + ',' + (forwardStrand ? '+' : '-') + ',' + TextCigarCodec.encode(forwardStrandCigar) + ',' + mapqual + ',' + mismatches;
     }
 }

@@ -1,5 +1,6 @@
 package org.broadinstitute.hellbender.tools.spark.sv;
 
+import com.google.common.annotations.VisibleForTesting;
 import htsjdk.samtools.util.SequenceUtil;
 import htsjdk.variant.variantcontext.VariantContext;
 import org.apache.commons.collections4.IterableUtils;
@@ -21,6 +22,8 @@ import scala.Tuple2;
 
 import java.util.List;
 import java.util.Optional;
+
+import static org.broadinstitute.hellbender.tools.spark.sv.CallVariantsFromAlignedContigsSpark.*;
 
 /**
  * This tool takes a SAM file containing the alignments of assembled contigs or long reads to the reference
@@ -45,7 +48,7 @@ public final class CallVariantsFromAlignedContigsSAMSpark extends GATKSparkTool 
 
     @Argument(doc = "Minimum flanking alignment length", shortName = "minAlignLength",
             fullName = "minAlignLength", optional = true)
-    private Integer minAlignLength = CallVariantsFromAlignedContigsSpark.DEFAULT_MIN_ALIGNMENT_LENGTH;
+    private Integer minAlignLength = DEFAULT_MIN_ALIGNMENT_LENGTH;
 
     @Override
     public boolean requiresReference() {
@@ -70,11 +73,11 @@ public final class CallVariantsFromAlignedContigsSAMSpark extends GATKSparkTool 
 
         final Integer minAlignLengthFinal = minAlignLength;
 
-        final JavaRDD<VariantContext> variantContexts = CallVariantsFromAlignedContigsSpark.callVariantsFromAlignmentRegions(broadcastReference, alignmentRegionsIterable, minAlignLengthFinal);
-        CallVariantsFromAlignedContigsSpark.writeVariants(fastaReference, logger, variantContexts, getAuthenticatedGCSOptions(), outputPath);
+        callVariantsFromAlignmentRegionsAndWriteVariants(broadcastReference, alignmentRegionsIterable, minAlignLengthFinal, fastaReference, getAuthenticatedGCSOptions(), outputPath);
     }
 
-    protected static Tuple2<Iterable<AlignmentRegion>, byte[]> convertToAlignmentRegions(final Iterable<GATKRead> reads) {
+    @VisibleForTesting
+    static Tuple2<Iterable<AlignmentRegion>, byte[]> convertToAlignmentRegions(final Iterable<GATKRead> reads) {
         final List<GATKRead> gatkReads = IterableUtils.toList(reads);
         final Optional<GATKRead> primaryRead = gatkReads.stream().filter(r -> !(r.isSecondaryAlignment() || r.isSupplementaryAlignment())).findFirst();
         if (! primaryRead.isPresent()) {

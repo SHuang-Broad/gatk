@@ -4,7 +4,6 @@ import com.github.lindenb.jbwa.jni.AlnRgn;
 import com.github.lindenb.jbwa.jni.BwaIndex;
 import com.github.lindenb.jbwa.jni.BwaMem;
 import com.github.lindenb.jbwa.jni.ShortRead;
-import htsjdk.samtools.util.SequenceUtil;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.broadinstitute.hellbender.exceptions.GATKException;
@@ -18,9 +17,8 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 
-import static org.broadinstitute.hellbender.tools.spark.sv.RunSGAViaProcessBuilderOnSpark.ContigsCollection;
-import static org.broadinstitute.hellbender.tools.spark.sv.RunSGAViaProcessBuilderOnSpark.ContigsCollection.ContigID;
-import static org.broadinstitute.hellbender.tools.spark.sv.RunSGAViaProcessBuilderOnSpark.ContigsCollection.ContigSequence;
+import static org.broadinstitute.hellbender.tools.spark.sv.ContigsCollection.ContigID;
+import static org.broadinstitute.hellbender.tools.spark.sv.ContigsCollection.ContigSequence;
 
 public class ContigAligner implements Closeable {
 
@@ -59,21 +57,19 @@ public class ContigAligner implements Closeable {
      * @return
      */
     public List<AlignmentRegion> alignContigs(final String assemblyId, final ContigsCollection contigsCollection) {
-        final List<AlignmentRegion> alignedContigs = new ArrayList<>();
+        final List<AlignmentRegion> alignedContigs = new ArrayList<>(contigsCollection.getContents().size());
         try {
             for(final Tuple2<ContigID, ContigSequence> contigInfo : contigsCollection.getContents()) {
                 final String contigId = contigInfo._1.toString();
                 final byte[] sequence = contigInfo._2.toString().getBytes();
                 final AlnRgn[] alnRgns = bwaAlignSequence(bwaMem, contigId, sequence);
 
-                log.info("alnRgns : " + (alnRgns == null ? "null" : alnRgns.length));
                 // filter out secondary alignments, convert to AlignmentRegion objects and sort by alignment start pos
-                final List<AlignmentRegion> alignmentRegionList = Arrays.stream(alnRgns)
+                Arrays.stream(alnRgns)
                         .filter(a -> a.getSecondary() < 0)
                         .map(a -> new AlignmentRegion(assemblyId, contigId, a))
                         .sorted(Comparator.comparing(a -> a.startInAssembledContig))
-                        .collect(SVUtils.arrayListCollector(alnRgns.length));
-                 alignedContigs.addAll(alignmentRegionList);
+                        .forEach(alignedContigs::add);
             }
         } catch (final IOException e) {
             throw new GATKException("could not execute BWA");

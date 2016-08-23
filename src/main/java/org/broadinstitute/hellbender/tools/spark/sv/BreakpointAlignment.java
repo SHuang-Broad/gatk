@@ -47,6 +47,7 @@ import java.util.List;
  *  AC
  */
 class BreakpointAlignment {
+    public static final String NO_SEQUENCE = "none";
     String contigId;
     AlignmentRegion region1;
     AlignmentRegion region2;
@@ -71,9 +72,9 @@ class BreakpointAlignment {
                 "\t" +
                 region2.toString() +
                 "\t" +
-                ("".equals(insertedSequence) ? "NA" : insertedSequence) +
+                ("".equals(insertedSequence) ? NO_SEQUENCE : insertedSequence) +
                 "\t" +
-                ("".equals(homology) ? "NA" : homology);
+                ("".equals(homology) ? NO_SEQUENCE : homology);
     }
 
     /**
@@ -98,8 +99,8 @@ class BreakpointAlignment {
             final AlignmentRegion alignmentRegion1 = AlignmentRegion.fromString(alignmentRegion1Fields);
             final String[] alignmentRegion2Fields = Arrays.copyOfRange(fields, 10, 19);
             final AlignmentRegion alignmentRegion2 = AlignmentRegion.fromString(alignmentRegion2Fields);
-            final String insertedSequence = fields[19].equals("NA") ? "" : fields[19];
-            final String homology = fields[20].equals("NA") ? "" : fields[20];
+            final String insertedSequence = fields[19].equals(NO_SEQUENCE) ? "" : fields[19];
+            final String homology = fields[20].equals(NO_SEQUENCE) ? "" : fields[20];
             final List<String> insertionMappings = Arrays.asList(fields[21].split(";"));
             return new BreakpointAlignment(contigId, alignmentRegion1, alignmentRegion2, insertedSequence, homology, insertionMappings);
         } catch (final NumberFormatException nfe) {
@@ -118,7 +119,7 @@ class BreakpointAlignment {
 
     @VisibleForTesting
     SimpleInterval getLeftAlignedLeftBreakpointOnAssembledContig() {
-        if (region1.equals(getLeftAlignmentRegion())) {
+        if (region1 == getLeftAlignmentRegion()) {
             final int position = region1.forwardStrand ? region1.referenceInterval.getEnd() - homology.length() : region1.referenceInterval.getStart();
             return new SimpleInterval(region1.referenceInterval.getContig(), position, position);
         } else {
@@ -129,7 +130,7 @@ class BreakpointAlignment {
 
     @VisibleForTesting
     SimpleInterval getLeftAlignedRightBreakpointOnAssembledContig() {
-        if (region1.equals(getLeftAlignmentRegion())) {
+        if (region1 == getLeftAlignmentRegion()) {
             final int position = region2.forwardStrand ? region2.referenceInterval.getStart() + homology.length() : region2.referenceInterval.getEnd();
             return new SimpleInterval(region2.referenceInterval.getContig(), position, position);
         } else {
@@ -163,11 +164,11 @@ class BreakpointAlignment {
         }
 
         if (!leftAlignedLeftBreakpointOnAssembledContig.getContig().equals(leftAlignedRightBreakpointOnAssembledContig.getContig())) {
-            return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion);
+            return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion, insertionMappings);
         } else if (leftAlignedLeftBreakpointOnAssembledContig.getStart() < leftAlignedRightBreakpointOnAssembledContig.getStart()) {
-            return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion);
+            return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion, insertionMappings);
         } else {
-            return new BreakpointAllele(leftAlignedRightBreakpointOnAssembledContig, leftAlignedLeftBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion);
+            return new BreakpointAllele(leftAlignedRightBreakpointOnAssembledContig, leftAlignedLeftBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion, insertionMappings);
         }
     }
 }

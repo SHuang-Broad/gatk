@@ -176,7 +176,7 @@ public class BreakpointEvidence implements Comparable<BreakpointEvidence> {
         public SplitRead( final GATKRead read, final ReadMetadata metadata, final boolean atStart ) {
             super(read, metadata, atStart ? read.getStart() : read.getEnd(), UNCERTAINTY);
             cigar = read.getCigar().toString();
-            if ( cigar == null ) throw new GATKException("Read has no forwardStrandCigar string.");
+            if ( cigar == null ) throw new GATKException("Read has no cigar string.");
             tagSA = read.getAttributeAsString(SA_TAG_NAME);
         }
 
@@ -236,7 +236,7 @@ public class BreakpointEvidence implements Comparable<BreakpointEvidence> {
         LargeIndel( final GATKRead read, final ReadMetadata metadata, final int contigOffset ) {
             super(read, metadata, contigOffset, UNCERTAINTY);
             cigar = read.getCigar().toString();
-            if ( cigar == null ) throw new GATKException("Read has no forwardStrandCigar string.");
+            if ( cigar == null ) throw new GATKException("Read has no cigar string.");
         }
 
         private LargeIndel( final Kryo kryo, final Input input ) {

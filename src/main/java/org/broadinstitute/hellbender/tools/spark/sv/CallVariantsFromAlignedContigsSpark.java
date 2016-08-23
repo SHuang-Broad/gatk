@@ -14,6 +14,7 @@ import htsjdk.variant.vcf.VCFConstants;
 import htsjdk.variant.vcf.VCFHeader;
 import htsjdk.variant.vcf.VCFStandardHeaderLines;
 import org.apache.commons.collections4.IterableUtils;
+import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
@@ -26,7 +27,6 @@ import org.broadinstitute.hellbender.engine.datasources.ReferenceMultiSource;
 import org.broadinstitute.hellbender.engine.datasources.ReferenceWindowFunctions;
 import org.broadinstitute.hellbender.engine.spark.GATKSparkTool;
 import org.broadinstitute.hellbender.exceptions.GATKException;
-import org.broadinstitute.hellbender.tools.spark.sv.RunSGAViaProcessBuilderOnSpark.ContigsCollection;
 import org.broadinstitute.hellbender.utils.IntervalUtils;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
 import org.broadinstitute.hellbender.utils.gcs.BucketUtils;
@@ -38,7 +38,7 @@ import java.io.OutputStream;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static org.broadinstitute.hellbender.tools.spark.sv.AlignAssembledContigsSpark.loadContigsCollectionKeyedByAssemblyId;
+import static org.broadinstitute.hellbender.tools.spark.sv.ContigsCollection.loadContigsCollectionKeyedByAssemblyId;
 
 @CommandLineProgramProperties(summary="Filter breakpoint alignments and call variants.",
         oneLineSummary="Filter breakpoint alignments and call variants",
@@ -46,6 +46,7 @@ import static org.broadinstitute.hellbender.tools.spark.sv.AlignAssembledContigs
 public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
     private static final long serialVersionUID = 1L;
     public static final Integer DEFAULT_MIN_ALIGNMENT_LENGTH = 50;
+    private static final Logger log = LogManager.getLogger(CallVariantsFromAlignedContigsSpark.class);
 
     @Argument(doc = "URI of the output path", shortName = "outputPath",
             fullName = "outputPath", optional = false)
@@ -79,7 +80,7 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
     protected void runTool(final JavaSparkContext ctx) {
         Broadcast<ReferenceMultiSource> broadcastReference = ctx.broadcast(getReference());
 
-        final JavaRDD<AlignmentRegion> inputAlignedContigs = ctx.textFile(inputAlignments).map(AlignAssembledContigsSpark::parseAlignedAssembledContigLine);
+        final JavaRDD<AlignmentRegion> inputAlignedContigs = ctx.textFile(inputAlignments).map(ContigsCollection::parseAlignedAssembledContigLine);
 
         final JavaPairRDD<Tuple2<String, String>, Iterable<AlignmentRegion>> alignmentRegionsKeyedByBreakpointAndContig = inputAlignedContigs.mapToPair(alignmentRegion -> new Tuple2<>(new Tuple2<>(alignmentRegion.assemblyId, alignmentRegion.contigId), alignmentRegion)).groupByKey();
 
@@ -88,24 +89,72 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         final JavaPairRDD<Tuple2<String, String>, byte[]> contigSequences = assemblyIdsToContigCollections.flatMapToPair(assemblyIdAndContigsCollection -> {
             final String assemblyId = assemblyIdAndContigsCollection._1;
             final ContigsCollection contigsCollection = assemblyIdAndContigsCollection._2;
-            final List<Tuple2<Tuple2<String, String>, byte[]>> contigSequencesKeyedByAssemblyIdAndContigId =
-                    contigsCollection.getContents().stream().map(pair -> new Tuple2<>(new Tuple2<>(assemblyId, pair._1.toString()), pair._2.toString().getBytes())).collect(Collectors.toList());
-            return contigSequencesKeyedByAssemblyIdAndContigId;
+            return contigsCollection.getContents().stream().map(pair -> new Tuple2<>(new Tuple2<>(assemblyId, pair._1.toString()), pair._2.toString().getBytes())).collect(Collectors.toList());
         });
 
         final JavaPairRDD<Tuple2<String, String>, Tuple2<Iterable<AlignmentRegion>, byte[]>> alignmentRegionsWithContigSequences = alignmentRegionsKeyedByBreakpointAndContig.join(contigSequences);
 
         final Integer minAlignLengthFinal = this.minAlignLength;
-        final JavaRDD<VariantContext> variantContexts = callVariantsFromAlignmentRegions(broadcastReference, alignmentRegionsWithContigSequences, minAlignLengthFinal);
+        callVariantsFromAlignmentRegionsAndWriteVariants(broadcastReference, alignmentRegionsWithContigSequences, minAlignLengthFinal, fastaReference, getAuthenticatedGCSOptions(), outputPath);
 
-        writeVariants(fastaReference, logger, variantContexts, getAuthenticatedGCSOptions(), outputPath);
 
     }
 
-    protected static JavaRDD<VariantContext> callVariantsFromAlignmentRegions(final Broadcast<ReferenceMultiSource> broadcastReference, final JavaPairRDD<Tuple2<String, String>, Tuple2<Iterable<AlignmentRegion>, byte[]>> alignmentRegionsWithContigSequences, final Integer minAlignLengthFinal) {
+    /**
+     * This method processes an RDD containing alignment regions, scanning for split alignments which match a set of filtering
+     * criteria, and emitting a list of VariantContexts representing SVs for split alignments that pass. It then writes the variants
+     * to the output path.
+     *
+     * The input RDD is of the form:
+     *
+     * Key: Tuple2 of two Strings: the assembly ID and the contig ID that the alignments come from
+     * Value: Tuple2 of:
+     *     {@code Iterable<AlignmentRegion>} AlignmentRegion objects representing all alignments for the contig
+     *     A byte array with the sequence content of the contig
+     *
+     * FASTA and Broadcast references are both required because 2bit Broadcast references currently order their
+     * sequence dictionaries in a scrambled order, see https://github.com/broadinstitute/gatk/issues/2037.
+     *
+     * @param broadcastReference The broadcast handle to the reference (used to populate reference bases)
+     * @param alignmentRegionsWithContigSequences A data structure as described above, where a list of AlignmentRegions and the sequence of the contig are keyed by a tuple of Assembly ID and Contig ID
+     * @param minAlignLength The minimum length of alignment regions flanking the breakpoint to emit an SV variant
+     * @param fastaReference The reference in FASTA format, used to get a sequence dictionary and sort the variants according to it
+     * @param pipelineOptions GCS pipeline option for creating and writing output files
+     * @param outputPath Path to write the output files
+     * @return An RDD of VariantContexts representing SVs called from breakpoint alignments
+     */
+    protected static void callVariantsFromAlignmentRegionsAndWriteVariants(final Broadcast<ReferenceMultiSource> broadcastReference,
+                                                                           final JavaPairRDD<Tuple2<String, String>, Tuple2<Iterable<AlignmentRegion>, byte[]>> alignmentRegionsWithContigSequences,
+                                                                           final Integer minAlignLength,
+                                                                           final String fastaReference,
+                                                                           final PipelineOptions pipelineOptions,
+                                                                           final String outputPath) {
+        final JavaRDD<VariantContext> variants = callVariantsFromAlignmentRegions(broadcastReference, alignmentRegionsWithContigSequences, minAlignLength);
+        writeVariants(fastaReference, variants, pipelineOptions, outputPath);
+    }
+
+    /**
+     * This method processes an RDD containing alignment regions, scanning for split alignments which match a set of filtering
+     * criteria, and emitting a list of VariantContexts representing SVs for split alignments that pass.
+     *
+     * The input RDD is of the form:
+     *
+     * Key: Tuple2 of two Strings: the assembly ID and the contig ID that the alignments come from
+     * Value: Tuple2 of:
+     *     {@code Iterable<AlignmentRegion>} AlignmentRegion objects representing all alignments for the contig
+     *     A byte array with the sequence content of the contig
+     *
+     * @param broadcastReference The broadcast handle to the reference (used to populate reference bases)
+     * @param alignmentRegionsWithContigSequences A data structure as described above, where a list of AlignmentRegions and the sequence of the contig are keyed by a tuple of Assembly ID and Contig ID
+     * @param minAlignLength The minimum length of alignment regions flanking the breakpoint to emit an SV variant
+     * @return An RDD of VariantContexts representing SVs called from breakpoint alignments
+     */
+    protected static JavaRDD<VariantContext> callVariantsFromAlignmentRegions(final Broadcast<ReferenceMultiSource> broadcastReference,
+                                                                              final JavaPairRDD<Tuple2<String, String>, Tuple2<Iterable<AlignmentRegion>, byte[]>> alignmentRegionsWithContigSequences,
+                                                                              final Integer minAlignLength) {
         JavaPairRDD<Tuple2<String, String>, BreakpointAlignment> assembledBreakpointsByBreakpointIdAndContigId =
                 alignmentRegionsWithContigSequences.flatMapValues(alignmentRegionsAndSequences ->
-                        CallVariantsFromAlignedContigsSpark.assembledBreakpointsFromAlignmentRegions(alignmentRegionsAndSequences._2, alignmentRegionsAndSequences._1, minAlignLengthFinal));
+                        CallVariantsFromAlignedContigsSpark.assembledBreakpointsFromAlignmentRegions(alignmentRegionsAndSequences._2, alignmentRegionsAndSequences._1, minAlignLength));
 
         final JavaPairRDD<BreakpointAllele, Tuple2<Tuple2<String,String>, BreakpointAlignment>> assembled3To5BreakpointsKeyedByPosition =
                 assembledBreakpointsByBreakpointIdAndContigId
@@ -114,7 +163,7 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
 
         final JavaPairRDD<BreakpointAllele, Iterable<Tuple2<Tuple2<String,String>, BreakpointAlignment>>> groupedBreakpoints = assembled3To5BreakpointsKeyedByPosition.groupByKey();
 
-        return groupedBreakpoints.map(breakpoints -> filterBreakpointsAndProduceVariants(breakpoints, broadcastReference)).cache();
+        return groupedBreakpoints.map(breakpoints -> filterBreakpointsAndProduceVariants(breakpoints, broadcastReference));
     }
 
     static List<BreakpointAlignment> getBreakpointAlignmentsFromAlignmentRegions(final byte[] sequence, final List<AlignmentRegion> alignmentRegionList, final Integer minAlignLength) {
@@ -138,7 +187,6 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
                 if (treatNextAlignmentRegionInPairAsInsertion(current, next, minAlignLength)) {
                     if (iterator.hasNext()) {
                         insertionAlignmentRegions.add(next.toPackedString());
-                        // todo: track alignments of skipped regions for classification as duplications, mei's etc.
                         continue;
                     } else {
                         break;
@@ -196,7 +244,8 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         return current.referenceInterval.size() - current.overlapOnContig(next) < minAlignLength;
     }
 
-    protected static boolean treatNextAlignmentRegionInPairAsInsertion(AlignmentRegion current, AlignmentRegion next, final Integer minAlignLength) {
+    @VisibleForTesting
+    static boolean treatNextAlignmentRegionInPairAsInsertion(AlignmentRegion current, AlignmentRegion next, final Integer minAlignLength) {
         return treatAlignmentRegionAsInsertion(next) ||
                 (next.referenceInterval.size() - current.overlapOnContig(next) < minAlignLength) ||
                 current.referenceInterval.contains(next.referenceInterval) ||
@@ -204,10 +253,10 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
     }
 
     private static boolean treatAlignmentRegionAsInsertion(final AlignmentRegion next) {
-        return next.mqual < 60;
+        return next.mapqual < 60;
     }
 
-    public static void writeVariants(final String fastaReference, final Logger logger, final JavaRDD<VariantContext> variantContexts, final PipelineOptions pipelineOptions, final String outputPath) {
+    private static void writeVariants(final String fastaReference, final JavaRDD<VariantContext> variantContexts, final PipelineOptions pipelineOptions, final String outputPath) {
 
         final List<VariantContext> variants = variantContexts.collect();
         final List<VariantContext> sortedVariantsList = new ArrayList<>(variants);
@@ -217,7 +266,7 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
 
         sortedVariantsList.sort((VariantContext v1, VariantContext v2) -> IntervalUtils.compareLocatables(v1, v2, referenceSequenceDictionary));
 
-        logger.info("Called " + variants.size() + " inversions");
+        log.info("Called " + variants.size() + " inversions");
         final VCFHeader header = getVcfHeader(referenceSequenceDictionary);
 
         writeVariants(outputPath, sortedVariantsList, pipelineOptions, "inversions.vcf", header, referenceSequenceDictionary);
@@ -263,7 +312,7 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         return vcWriterBuilder.build();
     }
 
-    public static Iterable<BreakpointAlignment> assembledBreakpointsFromAlignmentRegions(final byte[] contigSequence, final Iterable<AlignmentRegion> alignmentRegionsIterable, final Integer minAlignLength) {
+    private static Iterable<BreakpointAlignment> assembledBreakpointsFromAlignmentRegions(final byte[] contigSequence, final Iterable<AlignmentRegion> alignmentRegionsIterable, final Integer minAlignLength) {
         final List<AlignmentRegion> alignmentRegions = IterableUtils.toList(alignmentRegionsIterable);
         if (alignmentRegions.size() > 1) {
             alignmentRegions.sort(Comparator.comparing(a -> a.startInAssembledContig));
@@ -272,7 +321,7 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
     }
 
     @VisibleForTesting
-    public static VariantContext filterBreakpointsAndProduceVariants(final Tuple2<BreakpointAllele, Iterable<Tuple2<Tuple2<String,String>, BreakpointAlignment>>> assembledBreakpointsPerAllele, final Broadcast<ReferenceMultiSource> broadcastReference) throws IOException {
+    private static VariantContext filterBreakpointsAndProduceVariants(final Tuple2<BreakpointAllele, Iterable<Tuple2<Tuple2<String, String>, BreakpointAlignment>>> assembledBreakpointsPerAllele, final Broadcast<ReferenceMultiSource> broadcastReference) throws IOException {
         int numAssembledBreakpoints = 0;
         int highMqMappings = 0;
         int midMqMappings = 0;
@@ -292,7 +341,7 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         for (final Tuple2<Tuple2<String,String>, BreakpointAlignment> assembledBreakpointPair : assembledBreakpointsList) {
             final BreakpointAlignment breakpointAlignment = assembledBreakpointPair._2;
             numAssembledBreakpoints = numAssembledBreakpoints + 1;
-            final int assembledBreakpointMapq = Math.min(breakpointAlignment.region1.mqual, breakpointAlignment.region2.mqual);
+            final int assembledBreakpointMapq = Math.min(breakpointAlignment.region1.mapqual, breakpointAlignment.region2.mapqual);
             if (assembledBreakpointMapq == 60) {
                 highMqMappings = highMqMappings + 1;
             } else if (assembledBreakpointMapq > 0) {
@@ -339,11 +388,15 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
                 .attribute(GATKSVVCFHeaderLines.MAPPING_QUALITIES, mqs.stream().map(String::valueOf).collect(Collectors.joining(",")))
                 .attribute(GATKSVVCFHeaderLines.ALIGN_LENGTHS, alignLengths.stream().map(String::valueOf).collect(Collectors.joining(",")))
                 .attribute(GATKSVVCFHeaderLines.MAX_ALIGN_LENGTH, maxAlignLength)
-                .attribute(GATKSVVCFHeaderLines.BREAKPOINT_IDS, breakpointIds.stream().collect(Collectors.joining(",")))
+                .attribute(GATKSVVCFHeaderLines.ASSEMBLY_IDS, breakpointIds.stream().collect(Collectors.joining(",")))
                 .attribute(GATKSVVCFHeaderLines.CONTIG_IDS, assembledContigIds.stream().map(s -> s.replace(" ", "_")).collect(Collectors.joining(",")));
 
         if (breakpointAllele.insertedSequence.length() > 0) {
             vcBuilder = vcBuilder.attribute(GATKSVVCFHeaderLines.INSERTED_SEQUENCE, breakpointAllele.insertedSequence);
+        }
+
+        if (breakpointAllele.insertionMappings.size() > 0) {
+            vcBuilder = vcBuilder.attribute(GATKSVVCFHeaderLines.INSERTED_SEQUENCE_MAPPINGS, breakpointAllele.insertionMappings.stream().collect(Collectors.joining(";")));
         }
 
         if (breakpointAllele.homology.length() > 0) {
