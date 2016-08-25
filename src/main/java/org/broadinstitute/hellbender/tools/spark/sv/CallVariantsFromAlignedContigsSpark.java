@@ -78,8 +78,15 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
 
     @Override
     protected void runTool(final JavaSparkContext ctx) {
-        Broadcast<ReferenceMultiSource> broadcastReference = ctx.broadcast(getReference());
+//        final Broadcast<ReferenceMultiSource> broadcastReference = ctx.broadcast(getReference());
+//        final Integer minAlignLengthFinal = this.minAlignLength;
 
+        final JavaPairRDD<Tuple2<String, String>, Tuple2<Iterable<AlignmentRegion>, byte[]>> alignmentRegionsWithContigSequences = prepForCalling(ctx);
+
+        callVariantsFromAlignmentRegionsAndWriteVariants(ctx.broadcast(getReference()), alignmentRegionsWithContigSequences, this.minAlignLength, fastaReference, getAuthenticatedGCSOptions(), outputPath);
+    }
+
+    private JavaPairRDD<Tuple2<String, String>, Tuple2<Iterable<AlignmentRegion>, byte[]>> prepForCalling(JavaSparkContext ctx) {
         final JavaRDD<AlignmentRegion> inputAlignedContigs = ctx.textFile(inputAlignments).map(ContigsCollection::parseAlignedAssembledContigLine);
 
         final JavaPairRDD<Tuple2<String, String>, Iterable<AlignmentRegion>> alignmentRegionsKeyedByBreakpointAndContig = inputAlignedContigs.mapToPair(alignmentRegion -> new Tuple2<>(new Tuple2<>(alignmentRegion.assemblyId, alignmentRegion.contigId), alignmentRegion)).groupByKey();
@@ -92,12 +99,7 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
             return contigsCollection.getContents().stream().map(pair -> new Tuple2<>(new Tuple2<>(assemblyId, pair._1.toString()), pair._2.toString().getBytes())).collect(Collectors.toList());
         });
 
-        final JavaPairRDD<Tuple2<String, String>, Tuple2<Iterable<AlignmentRegion>, byte[]>> alignmentRegionsWithContigSequences = alignmentRegionsKeyedByBreakpointAndContig.join(contigSequences);
-
-        final Integer minAlignLengthFinal = this.minAlignLength;
-        callVariantsFromAlignmentRegionsAndWriteVariants(broadcastReference, alignmentRegionsWithContigSequences, minAlignLengthFinal, fastaReference, getAuthenticatedGCSOptions(), outputPath);
-
-
+        return alignmentRegionsKeyedByBreakpointAndContig.join(contigSequences);
     }
 
     /**
@@ -129,10 +131,20 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
                                                                            final String fastaReference,
                                                                            final PipelineOptions pipelineOptions,
                                                                            final String outputPath) {
-        final JavaRDD<VariantContext> variants = callVariantsFromAlignmentRegions(broadcastReference, alignmentRegionsWithContigSequences, minAlignLength);
-        writeVariants(fastaReference, variants, pipelineOptions, outputPath);
-    }
 
+        final JavaRDD<VariantContext> variantContextJavaRDD = callVariantsFromAlignmentRegions(broadcastReference, alignmentRegionsWithContigSequences, minAlignLength);
+
+        final List<VariantContext> variants = variantContextJavaRDD.collect();
+        log.info("Called " + variants.size() + " inversions");
+
+        final SAMSequenceDictionary referenceSequenceDictionary = new ReferenceMultiSource(pipelineOptions, fastaReference, ReferenceWindowFunctions.IDENTITY_FUNCTION).getReferenceSequenceDictionary(null);
+
+        final List<VariantContext> sortedVariantsList = new ArrayList<>(variants);
+        sortedVariantsList.sort((VariantContext v1, VariantContext v2) -> IntervalUtils.compareLocatables(v1, v2, referenceSequenceDictionary));
+
+        writeVariants(outputPath, sortedVariantsList, pipelineOptions, "inversions.vcf", referenceSequenceDictionary);
+    }
+    ////////////////////////////
     /**
      * This method processes an RDD containing alignment regions, scanning for split alignments which match a set of filtering
      * criteria, and emitting a list of VariantContexts representing SVs for split alignments that pass.
@@ -164,6 +176,16 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         final JavaPairRDD<BreakpointAllele, Iterable<Tuple2<Tuple2<String,String>, BreakpointAlignment>>> groupedBreakpoints = assembled3To5BreakpointsKeyedByPosition.groupByKey();
 
         return groupedBreakpoints.map(breakpoints -> filterBreakpointsAndProduceVariants(breakpoints, broadcastReference));
+    }
+
+    ////////////////////////////
+
+    private static Iterable<BreakpointAlignment> assembledBreakpointsFromAlignmentRegions(final byte[] contigSequence, final Iterable<AlignmentRegion> alignmentRegionsIterable, final Integer minAlignLength) {
+        final List<AlignmentRegion> alignmentRegions = IterableUtils.toList(alignmentRegionsIterable);
+        if (alignmentRegions.size() > 1) {
+            alignmentRegions.sort(Comparator.comparing(a -> a.startInAssembledContig));
+        }
+        return getBreakpointAlignmentsFromAlignmentRegions(contigSequence, alignmentRegions, minAlignLength);
     }
 
     static List<BreakpointAlignment> getBreakpointAlignmentsFromAlignmentRegions(final byte[] sequence, final List<AlignmentRegion> alignmentRegionList, final Integer minAlignLength) {
@@ -209,6 +231,34 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         return results;
     }
 
+    @VisibleForTesting
+    static boolean treatNextAlignmentRegionInPairAsInsertion(AlignmentRegion current, AlignmentRegion next, final Integer minAlignLength) {
+        return treatAlignmentRegionAsInsertion(next) ||
+                (next.referenceInterval.size() - current.overlapOnContig(next) < minAlignLength) ||
+                current.referenceInterval.contains(next.referenceInterval) ||
+                next.referenceInterval.contains(current.referenceInterval);
+    }
+
+    private static boolean treatAlignmentRegionAsInsertion(final AlignmentRegion next) {
+        return next.mapqual < 60;
+    }
+
+    private static boolean currentAlignmentRegionIsTooSmall(final AlignmentRegion current, final AlignmentRegion next, final Integer minAlignLength) {
+        return current.referenceInterval.size() - current.overlapOnContig(next) < minAlignLength;
+    }
+
+    private static String getHomology(final AlignmentRegion current, final AlignmentRegion previous, final byte[] sequenceCopy) {
+        String homology = "";
+        if (previous.endInAssembledContig >= current.startInAssembledContig) {
+            final byte[] homologyBytes = Arrays.copyOfRange(sequenceCopy, current.startInAssembledContig - 1, previous.endInAssembledContig);
+            if (previous.referenceInterval.getStart() > current.referenceInterval.getStart()) {
+                SequenceUtil.reverseComplement(homologyBytes, 0, homologyBytes.length);
+            }
+            homology = new String(homologyBytes);
+        }
+        return homology;
+    }
+
     private static String getInsertedSequence(final AlignmentRegion current, final AlignmentRegion previous, final byte[] sequenceCopy) {
         String insertedSequence = "";
         if (previous.endInAssembledContig < current.startInAssembledContig - 1) {
@@ -228,97 +278,19 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         return insertedSequence;
     }
 
-    private static String getHomology(final AlignmentRegion current, final AlignmentRegion previous, final byte[] sequenceCopy) {
-        String homology = "";
-        if (previous.endInAssembledContig >= current.startInAssembledContig) {
-            final byte[] homologyBytes = Arrays.copyOfRange(sequenceCopy, current.startInAssembledContig - 1, previous.endInAssembledContig);
-            if (previous.referenceInterval.getStart() > current.referenceInterval.getStart()) {
-                SequenceUtil.reverseComplement(homologyBytes, 0, homologyBytes.length);
-            }
-            homology = new String(homologyBytes);
-        }
-        return homology;
+    /////////////////////////
+
+    static Tuple2<BreakpointAllele, Tuple2<Tuple2<String,String>, BreakpointAlignment>> keyByBreakpointAllele(final Tuple2<Tuple2<String, String>, BreakpointAlignment> breakpointIdAndAssembledBreakpoint) {
+        final BreakpointAllele breakpointAllele = BreakpointAllele.fromBreakpointAlignment(breakpointIdAndAssembledBreakpoint._2);
+        return new Tuple2<>(breakpointAllele, new Tuple2<>(breakpointIdAndAssembledBreakpoint._1, breakpointIdAndAssembledBreakpoint._2));
     }
 
-    private static boolean currentAlignmentRegionIsTooSmall(final AlignmentRegion current, final AlignmentRegion next, final Integer minAlignLength) {
-        return current.referenceInterval.size() - current.overlapOnContig(next) < minAlignLength;
+    static Boolean inversionBreakpointAlleleFilter(final Tuple2<BreakpointAllele, Tuple2<Tuple2<String, String>, BreakpointAlignment>> breakpointAlleleTuple2Tuple2) {
+        final BreakpointAllele breakpointAllele = breakpointAlleleTuple2Tuple2._1;
+        return breakpointAllele.leftAlignedLeftBreakpoint.getContig().equals(breakpointAllele.leftAlignedRightBreakpoint.getContig()) && (breakpointAllele.inversionType != BreakpointAllele.InversionType.INV_NONE);
     }
 
-    @VisibleForTesting
-    static boolean treatNextAlignmentRegionInPairAsInsertion(AlignmentRegion current, AlignmentRegion next, final Integer minAlignLength) {
-        return treatAlignmentRegionAsInsertion(next) ||
-                (next.referenceInterval.size() - current.overlapOnContig(next) < minAlignLength) ||
-                current.referenceInterval.contains(next.referenceInterval) ||
-                next.referenceInterval.contains(current.referenceInterval);
-    }
-
-    private static boolean treatAlignmentRegionAsInsertion(final AlignmentRegion next) {
-        return next.mapqual < 60;
-    }
-
-    private static void writeVariants(final String fastaReference, final JavaRDD<VariantContext> variantContexts, final PipelineOptions pipelineOptions, final String outputPath) {
-
-        final List<VariantContext> variants = variantContexts.collect();
-        final List<VariantContext> sortedVariantsList = new ArrayList<>(variants);
-
-        final ReferenceMultiSource referenceMultiSource = new ReferenceMultiSource(pipelineOptions, fastaReference, ReferenceWindowFunctions.IDENTITY_FUNCTION);
-        final SAMSequenceDictionary referenceSequenceDictionary = referenceMultiSource.getReferenceSequenceDictionary(null);
-
-        sortedVariantsList.sort((VariantContext v1, VariantContext v2) -> IntervalUtils.compareLocatables(v1, v2, referenceSequenceDictionary));
-
-        log.info("Called " + variants.size() + " inversions");
-        final VCFHeader header = getVcfHeader(referenceSequenceDictionary);
-
-        writeVariants(outputPath, sortedVariantsList, pipelineOptions, "inversions.vcf", header, referenceSequenceDictionary);
-    }
-
-    private static VCFHeader getVcfHeader(final SAMSequenceDictionary referenceSequenceDictionary) {
-        final VCFHeader header = new VCFHeader();
-        header.setSequenceDictionary(referenceSequenceDictionary);
-        header.addMetaDataLine(VCFStandardHeaderLines.getInfoLine(VCFConstants.END_KEY));
-        GATKSVVCFHeaderLines.vcfHeaderLines.values().forEach(header::addMetaDataLine);
-        return header;
-    }
-
-    private static void writeVariants(final String outputPath, final List<VariantContext> variantsArrayList, final PipelineOptions pipelineOptions, final String fileName, final VCFHeader header, final SAMSequenceDictionary referenceSequenceDictionary) {
-        try (final OutputStream outputStream = new BufferedOutputStream(
-                BucketUtils.createFile(outputPath + "/" + fileName, pipelineOptions))) {
-
-            final VariantContextWriter vcfWriter = getVariantContextWriter(outputStream, referenceSequenceDictionary);
-
-            vcfWriter.writeHeader(header);
-            variantsArrayList.forEach(vcfWriter::add);
-            vcfWriter.close();
-
-        } catch (IOException e) {
-            throw new GATKException("Could not create output file", e);
-        }
-    }
-
-    private static VariantContextWriter getVariantContextWriter(final OutputStream outputStream, final SAMSequenceDictionary referenceSequenceDictionary) {
-        VariantContextWriterBuilder vcWriterBuilder = new VariantContextWriterBuilder()
-                                                            .clearOptions()
-                                                            .setOutputStream(outputStream);
-
-        if (null != referenceSequenceDictionary) {
-            vcWriterBuilder = vcWriterBuilder.setReferenceDictionary(referenceSequenceDictionary);
-        }
-        // todo: remove this when things are solid?
-        vcWriterBuilder = vcWriterBuilder.setOption(Options.ALLOW_MISSING_FIELDS_IN_HEADER);
-        for (Options opt : new Options[]{}) {
-            vcWriterBuilder = vcWriterBuilder.setOption(opt);
-        }
-
-        return vcWriterBuilder.build();
-    }
-
-    private static Iterable<BreakpointAlignment> assembledBreakpointsFromAlignmentRegions(final byte[] contigSequence, final Iterable<AlignmentRegion> alignmentRegionsIterable, final Integer minAlignLength) {
-        final List<AlignmentRegion> alignmentRegions = IterableUtils.toList(alignmentRegionsIterable);
-        if (alignmentRegions.size() > 1) {
-            alignmentRegions.sort(Comparator.comparing(a -> a.startInAssembledContig));
-        }
-        return getBreakpointAlignmentsFromAlignmentRegions(contigSequence, alignmentRegions, minAlignLength);
-    }
+    //////////////////////////
 
     @VisibleForTesting
     private static VariantContext filterBreakpointsAndProduceVariants(final Tuple2<BreakpointAllele, Iterable<Tuple2<Tuple2<String, String>, BreakpointAlignment>>> assembledBreakpointsPerAllele, final Broadcast<ReferenceMultiSource> broadcastReference) throws IOException {
@@ -404,11 +376,11 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
             vcBuilder = vcBuilder.attribute(GATKSVVCFHeaderLines.HOMOLOGY_LENGTH, breakpointAllele.homology.length());
         }
 
-        if (breakpointAllele.getInversionType() == BreakpointAllele.InversionType.INV_5_TO_3) {
+        if (breakpointAllele.inversionType == BreakpointAllele.InversionType.INV_5_TO_3) {
             vcBuilder = vcBuilder.attribute(GATKSVVCFHeaderLines.INV_5_TO_3, "");
         }
 
-        if (breakpointAllele.getInversionType() == BreakpointAllele.InversionType.INV_3_TO_5) {
+        if (breakpointAllele.inversionType == BreakpointAllele.InversionType.INV_3_TO_5) {
             vcBuilder = vcBuilder.attribute(GATKSVVCFHeaderLines.INV_3_TO_5, "");
         }
 
@@ -416,20 +388,50 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
         return vcBuilder.make();
     }
 
-
     private static String getInversionId(final BreakpointAllele breakpointAllele) {
-        final String invType = breakpointAllele.getInversionType().name();
+        final String invType = breakpointAllele.inversionType.name();
         return invType + "_" + breakpointAllele.leftAlignedLeftBreakpoint.getContig() + "_" + breakpointAllele.leftAlignedLeftBreakpoint.getStart() + "_" + breakpointAllele.leftAlignedRightBreakpoint.getStart();
     }
 
+    ////////////////////////////
 
-    static Tuple2<BreakpointAllele, Tuple2<Tuple2<String,String>, BreakpointAlignment>> keyByBreakpointAllele(final Tuple2<Tuple2<String, String>, BreakpointAlignment> breakpointIdAndAssembledBreakpoint) {
-        final BreakpointAllele breakpointAllele = breakpointIdAndAssembledBreakpoint._2.getBreakpointAllele();
-        return new Tuple2<>(breakpointAllele, new Tuple2<>(breakpointIdAndAssembledBreakpoint._1, breakpointIdAndAssembledBreakpoint._2));
+    private static void writeVariants(final String outputPath, final List<VariantContext> variantsArrayList, final PipelineOptions pipelineOptions, final String fileName, final SAMSequenceDictionary referenceSequenceDictionary) {
+
+        try (final OutputStream outputStream = new BufferedOutputStream(
+                BucketUtils.createFile(outputPath + "/" + fileName, pipelineOptions))) {
+
+            final VCFHeader header = getVcfHeader(referenceSequenceDictionary);
+            final VariantContextWriter vcfWriter = getVariantContextWriter(outputStream, referenceSequenceDictionary);
+            vcfWriter.writeHeader(header);
+            variantsArrayList.forEach(vcfWriter::add);
+            vcfWriter.close();
+        } catch (IOException e) {
+            throw new GATKException("Could not create output file", e);
+        }
     }
 
-    static Boolean inversionBreakpointAlleleFilter(final Tuple2<BreakpointAllele, Tuple2<Tuple2<String, String>, BreakpointAlignment>> breakpointAlleleTuple2Tuple2) {
-        final BreakpointAllele breakpointAllele = breakpointAlleleTuple2Tuple2._1;
-        return breakpointAllele.leftAlignedLeftBreakpoint.getContig().equals(breakpointAllele.leftAlignedRightBreakpoint.getContig()) && (breakpointAllele.fiveToThree || breakpointAllele.threeToFive);
+    private static VCFHeader getVcfHeader(final SAMSequenceDictionary referenceSequenceDictionary) {
+        final VCFHeader header = new VCFHeader();
+        header.setSequenceDictionary(referenceSequenceDictionary);
+        header.addMetaDataLine(VCFStandardHeaderLines.getInfoLine(VCFConstants.END_KEY));
+        GATKSVVCFHeaderLines.vcfHeaderLines.values().forEach(header::addMetaDataLine);
+        return header;
+    }
+
+    private static VariantContextWriter getVariantContextWriter(final OutputStream outputStream, final SAMSequenceDictionary referenceSequenceDictionary) {
+        VariantContextWriterBuilder vcWriterBuilder = new VariantContextWriterBuilder()
+                .clearOptions()
+                .setOutputStream(outputStream);
+
+        if (null != referenceSequenceDictionary) {
+            vcWriterBuilder = vcWriterBuilder.setReferenceDictionary(referenceSequenceDictionary);
+        }
+        // todo: remove this when things are solid?
+        vcWriterBuilder = vcWriterBuilder.setOption(Options.ALLOW_MISSING_FIELDS_IN_HEADER);
+        for (Options opt : new Options[]{}) {
+            vcWriterBuilder = vcWriterBuilder.setOption(opt);
+        }
+
+        return vcWriterBuilder.build();
     }
 }

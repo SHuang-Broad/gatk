@@ -30,7 +30,7 @@ public class BreakpointAlignmentTest {
         final AlignmentRegion region1 = new AlignmentRegion("1","1", TextCigarCodec.decode("105M100S"), true, new SimpleInterval("1", 100, 205), 60, 1, 105, 0);
         final AlignmentRegion region2 = new AlignmentRegion("1","1", TextCigarCodec.decode("100S105M"), false, new SimpleInterval("1", 505, 605), 60, 95, 200, 0);
         final BreakpointAlignment breakpointAlignment = new BreakpointAlignment("1", region1, region2, "", "ACACA", new ArrayList<>());
-        final BreakpointAllele breakpointAllele = breakpointAlignment.getBreakpointAllele();
+        final BreakpointAllele breakpointAllele = breakpointAlignment.makeBreakpointAllele();
         Assert.assertEquals(breakpointAllele.leftAlignedLeftBreakpoint, new SimpleInterval("1", 200, 200));
         Assert.assertEquals(breakpointAllele.leftAlignedRightBreakpoint, new SimpleInterval("1", 605, 605));
         Assert.assertTrue(breakpointAllele.fiveToThree);
