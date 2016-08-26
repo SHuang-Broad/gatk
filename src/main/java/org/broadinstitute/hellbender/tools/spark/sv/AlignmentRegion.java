@@ -69,6 +69,7 @@ class AlignmentRegion {
         }
     }
 
+    // TODO: possible to make this a static method?
     public int overlapOnContig(final AlignmentRegion other) {
         return Math.max(0, Math.min(endInAssembledContig + 1, other.endInAssembledContig + 1) - Math.max(startInAssembledContig, other.startInAssembledContig));
     }
@@ -86,14 +87,14 @@ class AlignmentRegion {
     }
 
     private static int startOfAlignmentInContig(final Cigar cigar) {
-        return getClippedBases(true, cigar) + 1;
+        return getNumClippedBases(true, cigar) + 1;
     }
 
     private static int endOfAlignmentInContig(final int assembledContigLength, final Cigar cigar) {
-        return assembledContigLength - getClippedBases(false, cigar);
+        return assembledContigLength - getNumClippedBases(false, cigar);
     }
 
-    private static int getClippedBases(final boolean fromStart, final Cigar cigar) {
+    private static int getNumClippedBases(final boolean fromStart, final Cigar cigar) {
         int result = 0;
         int j = fromStart ? 0 : cigar.getCigarElements().size() - 1;
         final int offset = fromStart ? 1 : -1;

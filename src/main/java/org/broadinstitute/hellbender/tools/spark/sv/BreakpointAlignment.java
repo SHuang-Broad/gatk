@@ -3,6 +3,7 @@ package org.broadinstitute.hellbender.tools.spark.sv;
 import com.google.common.annotations.VisibleForTesting;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
+import scala.Tuple2;
 
 import java.util.Arrays;
 import java.util.List;
@@ -55,10 +56,15 @@ class BreakpointAlignment {
     String homology;
     List<String> insertionMappings;
 
-    public BreakpointAlignment(final String contigId, final AlignmentRegion region1, final AlignmentRegion region2, final String insertedSequence, final String homology, final List<String> insertionMappings) {
+    /**
+     * Assumes {@code region1} has a lower {@link AlignmentRegion#startInAssembledContig} than {@code region2}.
+     */
+    public BreakpointAlignment(final String contigId, final AlignmentRegion region1, final AlignmentRegion region2,
+                               final String insertedSequence, final String homology, final List<String> insertionMappings) {
         this.contigId = contigId;
         this.region1 = region1;
         this.region2 = region2;
+
         this.insertedSequence = insertedSequence;
         this.homology = homology;
         this.insertionMappings = insertionMappings;
@@ -109,33 +115,25 @@ class BreakpointAlignment {
 
     }
 
-    AlignmentRegion getLeftAlignmentRegion() {
+    @VisibleForTesting
+    Tuple2<SimpleInterval, SimpleInterval> get5And3BPsLeftAlignedOnContig(){
+
+        String fiveContig, threeContig;
+        int fivePosition, threePosition;
+
         if (region1.referenceInterval.getStart() < region2.referenceInterval.getStart()) {
-            return region1;
+            fivePosition = region1.forwardStrand ? region1.referenceInterval.getEnd() - homology.length() : region1.referenceInterval.getStart();
+            threePosition = region2.forwardStrand ? region2.referenceInterval.getStart() + homology.length() : region2.referenceInterval.getEnd();
+            fiveContig = region1.referenceInterval.getContig();
+            threeContig = region2.referenceInterval.getContig();
         } else {
-            return region2;
+            fivePosition = region2.forwardStrand ? region2.referenceInterval.getStart() : region2.referenceInterval.getEnd() - homology.length();
+            threePosition = region1.forwardStrand ? region1.referenceInterval.getEnd() - homology.length() : region1.referenceInterval.getStart();
+            fiveContig = region2.referenceInterval.getContig();
+            threeContig = region1.referenceInterval.getContig();
         }
-    }
 
-    @VisibleForTesting
-    SimpleInterval getLeftAlignedLeftBreakpointOnAssembledContig() {
-        if (region1 == getLeftAlignmentRegion()) {
-            final int position = region1.forwardStrand ? region1.referenceInterval.getEnd() - homology.length() : region1.referenceInterval.getStart();
-            return new SimpleInterval(region1.referenceInterval.getContig(), position, position);
-        } else {
-            final int position = region2.forwardStrand ? region2.referenceInterval.getStart() : region2.referenceInterval.getEnd() - homology.length();
-            return new SimpleInterval(region1.referenceInterval.getContig(), position, position);
-        }
-    }
-
-    @VisibleForTesting
-    SimpleInterval getLeftAlignedRightBreakpointOnAssembledContig() {
-        if (region1 == getLeftAlignmentRegion()) {
-            final int position = region2.forwardStrand ? region2.referenceInterval.getStart() + homology.length() : region2.referenceInterval.getEnd();
-            return new SimpleInterval(region2.referenceInterval.getContig(), position, position);
-        } else {
-            final int position = region1.forwardStrand ? region1.referenceInterval.getEnd() - homology.length() : region1.referenceInterval.getStart();
-            return new SimpleInterval(region2.referenceInterval.getContig(), position, position);
-        }
+        return new Tuple2<>( new SimpleInterval(fiveContig, fivePosition, fivePosition),
+                             new SimpleInterval(threeContig, threePosition, threePosition) );
     }
 }

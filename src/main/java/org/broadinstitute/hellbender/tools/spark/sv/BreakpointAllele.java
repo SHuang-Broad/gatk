@@ -1,6 +1,7 @@
 package org.broadinstitute.hellbender.tools.spark.sv;
 
 import org.broadinstitute.hellbender.utils.SimpleInterval;
+import scala.Tuple2;
 
 import java.util.List;
 import java.util.Objects;
@@ -28,8 +29,9 @@ class BreakpointAllele {
      */
     public static BreakpointAllele fromBreakpointAlignment(final BreakpointAlignment breakpointAlignment) {
 
-        final SimpleInterval leftAlignedLeftBreakpointOnAssembledContig = breakpointAlignment.getLeftAlignedLeftBreakpointOnAssembledContig();
-        final SimpleInterval leftAlignedRightBreakpointOnAssembledContig = breakpointAlignment.getLeftAlignedRightBreakpointOnAssembledContig();
+        final Tuple2<SimpleInterval, SimpleInterval> bps = breakpointAlignment.get5And3BPsLeftAlignedOnContig();
+        final SimpleInterval fiveEndBPLeftAlignedOnContig = bps._1();
+        final SimpleInterval threeEndBPLeftAlignedOnContig = bps._2();
 
         final boolean isFiveToThreeInversion;
         final boolean isThreeToFiveInversion;
@@ -40,7 +42,7 @@ class BreakpointAllele {
         final String baInsertedSeq = breakpointAlignment.insertedSequence;
         final List<String> baInsertionMappings = breakpointAlignment.insertionMappings;
 
-        if (baRegion1.equals(breakpointAlignment.getLeftAlignmentRegion())) {
+        if (baRegion1.referenceInterval.getStart() < baRegion2.referenceInterval.getStart()) {
             isFiveToThreeInversion = baRegion1.forwardStrand && !baRegion2.forwardStrand;
             isThreeToFiveInversion = !baRegion1.forwardStrand && baRegion2.forwardStrand;
         } else {
@@ -48,12 +50,12 @@ class BreakpointAllele {
             isThreeToFiveInversion = baRegion1.forwardStrand && !baRegion2.forwardStrand;
         }
 
-        if (!leftAlignedLeftBreakpointOnAssembledContig.getContig().equals(leftAlignedRightBreakpointOnAssembledContig.getContig())) {
-            return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, baInsertedSeq, baHomology, isFiveToThreeInversion, isThreeToFiveInversion, baInsertionMappings);
-        } else if (leftAlignedLeftBreakpointOnAssembledContig.getStart() < leftAlignedRightBreakpointOnAssembledContig.getStart()) {
-            return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, baInsertedSeq, baHomology, isFiveToThreeInversion, isThreeToFiveInversion, baInsertionMappings);
+        if (!fiveEndBPLeftAlignedOnContig.getContig().equals(threeEndBPLeftAlignedOnContig.getContig())) {
+            return new BreakpointAllele(fiveEndBPLeftAlignedOnContig, threeEndBPLeftAlignedOnContig, baInsertedSeq, baHomology, isFiveToThreeInversion, isThreeToFiveInversion, baInsertionMappings);
+        } else if (fiveEndBPLeftAlignedOnContig.getStart() < threeEndBPLeftAlignedOnContig.getStart()) {
+            return new BreakpointAllele(fiveEndBPLeftAlignedOnContig, threeEndBPLeftAlignedOnContig, baInsertedSeq, baHomology, isFiveToThreeInversion, isThreeToFiveInversion, baInsertionMappings);
         } else {
-            return new BreakpointAllele(leftAlignedRightBreakpointOnAssembledContig, leftAlignedLeftBreakpointOnAssembledContig, baInsertedSeq, baHomology, isFiveToThreeInversion, isThreeToFiveInversion, baInsertionMappings);
+            return new BreakpointAllele(threeEndBPLeftAlignedOnContig, fiveEndBPLeftAlignedOnContig, baInsertedSeq, baHomology, isFiveToThreeInversion, isThreeToFiveInversion, baInsertionMappings);
         }
     }
 
