@@ -3,6 +3,7 @@ package org.broadinstitute.hellbender.tools.spark.sv;
 import com.google.common.annotations.VisibleForTesting;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
+import scala.Tuple2;
 
 import java.util.Arrays;
 import java.util.List;
@@ -55,10 +56,15 @@ class BreakpointAlignment {
     String homology;
     List<String> insertionMappings;
 
-    public BreakpointAlignment(final String contigId, final AlignmentRegion region1, final AlignmentRegion region2, final String insertedSequence, final String homology, final List<String> insertionMappings) {
+    /**
+     * Assumes {@code region1} has a lower {@link AlignmentRegion#startInAssembledContig} than {@code region2}.
+     */
+    public BreakpointAlignment(final String contigId, final AlignmentRegion region1, final AlignmentRegion region2,
+                               final String insertedSequence, final String homology, final List<String> insertionMappings) {
         this.contigId = contigId;
         this.region1 = region1;
         this.region2 = region2;
+
         this.insertedSequence = insertedSequence;
         this.homology = homology;
         this.insertionMappings = insertionMappings;
@@ -109,66 +115,25 @@ class BreakpointAlignment {
 
     }
 
-    private AlignmentRegion getLeftAlignmentRegion() {
+    @VisibleForTesting
+    Tuple2<SimpleInterval, SimpleInterval> get5And3BPsLeftAlignedOnContig(){
+
+        String fiveContig, threeContig;
+        int fivePosition, threePosition;
+
         if (region1.referenceInterval.getStart() < region2.referenceInterval.getStart()) {
-            return region1;
+            fivePosition = region1.forwardStrand ? region1.referenceInterval.getEnd() - homology.length() : region1.referenceInterval.getStart();
+            threePosition = region2.forwardStrand ? region2.referenceInterval.getStart() + homology.length() : region2.referenceInterval.getEnd();
+            fiveContig = region1.referenceInterval.getContig();
+            threeContig = region2.referenceInterval.getContig();
         } else {
-            return region2;
-        }
-    }
-
-    @VisibleForTesting
-    SimpleInterval getLeftAlignedLeftBreakpointOnAssembledContig() {
-        if (region1 == getLeftAlignmentRegion()) {
-            final int position = region1.forwardStrand ? region1.referenceInterval.getEnd() - homology.length() : region1.referenceInterval.getStart();
-            return new SimpleInterval(region1.referenceInterval.getContig(), position, position);
-        } else {
-            final int position = region2.forwardStrand ? region2.referenceInterval.getStart() : region2.referenceInterval.getEnd() - homology.length();
-            return new SimpleInterval(region1.referenceInterval.getContig(), position, position);
-        }
-    }
-
-    @VisibleForTesting
-    SimpleInterval getLeftAlignedRightBreakpointOnAssembledContig() {
-        if (region1 == getLeftAlignmentRegion()) {
-            final int position = region2.forwardStrand ? region2.referenceInterval.getStart() + homology.length() : region2.referenceInterval.getEnd();
-            return new SimpleInterval(region2.referenceInterval.getContig(), position, position);
-        } else {
-            final int position = region1.forwardStrand ? region1.referenceInterval.getEnd() - homology.length() : region1.referenceInterval.getStart();
-            return new SimpleInterval(region2.referenceInterval.getContig(), position, position);
-        }
-    }
-
-    /**
-     * Returns the canonical representation of the breakpoint implied by this split contig alignment,
-     * including whether it is a 3-5 or 5-3 inversion, and the homology and inserted sequence at the
-     * breakpoint. The two intervals returned are 1bp intervals indicating the exact breakpoint
-     * location. If there is homology at the breakpoint, the breakpoint locations will be left
-     * aligned.
-     * @return
-     */
-    public BreakpointAllele getBreakpointAllele() {
-
-        final SimpleInterval leftAlignedLeftBreakpointOnAssembledContig = getLeftAlignedLeftBreakpointOnAssembledContig();
-        final SimpleInterval leftAlignedRightBreakpointOnAssembledContig = getLeftAlignedRightBreakpointOnAssembledContig();
-
-        final boolean isFiveToThreeInversion;
-        final boolean isThreeToFiveInversion;
-
-        if (region1.equals(getLeftAlignmentRegion())) {
-            isFiveToThreeInversion = region1.forwardStrand && !region2.forwardStrand;
-            isThreeToFiveInversion = !region1.forwardStrand && region2.forwardStrand;
-        } else {
-            isFiveToThreeInversion = !region1.forwardStrand && region2.forwardStrand;
-            isThreeToFiveInversion = region1.forwardStrand && !region2.forwardStrand;
+            fivePosition = region2.forwardStrand ? region2.referenceInterval.getStart() : region2.referenceInterval.getEnd() - homology.length();
+            threePosition = region1.forwardStrand ? region1.referenceInterval.getEnd() - homology.length() : region1.referenceInterval.getStart();
+            fiveContig = region2.referenceInterval.getContig();
+            threeContig = region1.referenceInterval.getContig();
         }
 
-        if (!leftAlignedLeftBreakpointOnAssembledContig.getContig().equals(leftAlignedRightBreakpointOnAssembledContig.getContig())) {
-            return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion, insertionMappings);
-        } else if (leftAlignedLeftBreakpointOnAssembledContig.getStart() < leftAlignedRightBreakpointOnAssembledContig.getStart()) {
-            return new BreakpointAllele(leftAlignedLeftBreakpointOnAssembledContig, leftAlignedRightBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion, insertionMappings);
-        } else {
-            return new BreakpointAllele(leftAlignedRightBreakpointOnAssembledContig, leftAlignedLeftBreakpointOnAssembledContig, insertedSequence, homology, isFiveToThreeInversion, isThreeToFiveInversion, insertionMappings);
-        }
+        return new Tuple2<>( new SimpleInterval(fiveContig, fivePosition, fivePosition),
+                             new SimpleInterval(threeContig, threePosition, threePosition) );
     }
 }

@@ -60,25 +60,25 @@ public class CallVariantsFromAlignedContigsSparkTest extends BaseTest {
         final AlignmentRegion region2 = new AlignmentRegion("1", "contig-1", TextCigarCodec.decode("100M"), false, new SimpleInterval("1", 20100, 20200), 60, 101, 200, 0);
         final BreakpointAlignment breakpoint1 = new BreakpointAlignment("contig-1", region1, region2, "", "", new ArrayList<>());
 
-        final Tuple2<BreakpointAllele, Tuple2<Tuple2<String, String>, BreakpointAlignment>> breakpointTuple1 = new Tuple2<>(breakpoint1.getBreakpointAllele(), new Tuple2<>(new Tuple2<>("1", "contig-1"), breakpoint1));
+        final Tuple2<BreakpointAllele, Tuple2<Tuple2<String, String>, BreakpointAlignment>> breakpointTuple1 = new Tuple2<>(breakpoint1.makeBreakpointAllele(), new Tuple2<>(new Tuple2<>("1", "contig-1"), breakpoint1));
 
-        Assert.assertTrue(CallVariantsFromAlignedContigsSpark.inversionBreakpointAlleleFilter(breakpointTuple1));
+        Assert.assertTrue(CallVariantsFromAlignedContigsSpark.breakpointAlleleRepresentsInversion(breakpointTuple1));
 
         final AlignmentRegion region3 = new AlignmentRegion("4", "contig-7", TextCigarCodec.decode("137M141S"), true, new SimpleInterval("19", 38343346, 38343483), 60, 1, 137, 0);
         final AlignmentRegion region4 = new AlignmentRegion("4", "contig-7", TextCigarCodec.decode("137S141M"), false, new SimpleInterval("10", 38342908, 38343049), 60, 138, 278, 0);
         final BreakpointAlignment breakpoint2 = new BreakpointAlignment("contig-7", region3, region4, "", "", new ArrayList<>());
 
-        final Tuple2<BreakpointAllele, Tuple2<Tuple2<String, String>, BreakpointAlignment>> breakpointTuple2 = new Tuple2<>(breakpoint2.getBreakpointAllele(), new Tuple2<>(new Tuple2<>("14399","contig-7"), breakpoint2));
+        final Tuple2<BreakpointAllele, Tuple2<Tuple2<String, String>, BreakpointAlignment>> breakpointTuple2 = new Tuple2<>(breakpoint2.makeBreakpointAllele(), new Tuple2<>(new Tuple2<>("14399","contig-7"), breakpoint2));
 
-        Assert.assertFalse(CallVariantsFromAlignedContigsSpark.inversionBreakpointAlleleFilter(breakpointTuple2));
+        Assert.assertFalse(CallVariantsFromAlignedContigsSpark.breakpointAlleleRepresentsInversion(breakpointTuple2));
 
         final AlignmentRegion region5 = new AlignmentRegion("3", "contig-7", TextCigarCodec.decode("137M141S"), true, new SimpleInterval("19", 38343346, 38343483), 60, 1, 137, 0);
         final AlignmentRegion region6 = new AlignmentRegion("3", "contig-7", TextCigarCodec.decode("137S141M"), false, new SimpleInterval("19", 38342908, 38343049), 60, 138, 278, 0);
         final BreakpointAlignment breakpoint3 = new BreakpointAlignment("contig-7", region5, region6, "", "", new ArrayList<>());
 
-        final Tuple2<BreakpointAllele, Tuple2<Tuple2<String, String>, BreakpointAlignment>> breakpointTuple3 = new Tuple2<>(breakpoint3.getBreakpointAllele(), new Tuple2<>(new Tuple2<>("14399","contig-7"), breakpoint3));
+        final Tuple2<BreakpointAllele, Tuple2<Tuple2<String, String>, BreakpointAlignment>> breakpointTuple3 = new Tuple2<>(breakpoint3.makeBreakpointAllele(), new Tuple2<>(new Tuple2<>("14399","contig-7"), breakpoint3));
 
-        Assert.assertTrue(CallVariantsFromAlignedContigsSpark.inversionBreakpointAlleleFilter(breakpointTuple3));
+        Assert.assertTrue(CallVariantsFromAlignedContigsSpark.breakpointAlleleRepresentsInversion(breakpointTuple3));
 
     }
 
