@@ -272,8 +272,8 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
                                       final byte[] sequenceCopy) {
 
         if (previous.endInAssembledContig >= current.startInAssembledContig) { // if the two AR's overlap on contig
-            final byte[] homologyBytes = Arrays.copyOfRange(sequenceCopy, current.startInAssembledContig - 1, previous.endInAssembledContig); // TODO: -1 or +1
-            if (previous.referenceInterval.getStart() > current.referenceInterval.getStart()) { // TODO: RC to get '+' strand?
+            final byte[] homologyBytes = Arrays.copyOfRange(sequenceCopy, current.startInAssembledContig - 1, previous.endInAssembledContig);
+            if (previous.referenceInterval.getStart() > current.referenceInterval.getStart()) {
                 SequenceUtil.reverseComplement(homologyBytes, 0, homologyBytes.length);
             }
             return new String(homologyBytes);
@@ -291,8 +291,8 @@ public final class CallVariantsFromAlignedContigsSpark extends GATKSparkTool {
             final int insertionStart = previous.endInAssembledContig + 1;
             final int insertionEnd = current.startInAssembledContig - 1;
 
-            final byte[] insertedSequenceBytes = Arrays.copyOfRange(sequenceCopy, insertionStart - 1, insertionEnd); // TODO: -1 or +1
-            if (previous.referenceInterval.getStart() > current.referenceInterval.getStart()) { // TODO: RC to get '+' strand?
+            final byte[] insertedSequenceBytes = Arrays.copyOfRange(sequenceCopy, insertionStart - 1, insertionEnd);
+            if (previous.referenceInterval.getStart() > current.referenceInterval.getStart()) {
                 SequenceUtil.reverseComplement(insertedSequenceBytes, 0, insertedSequenceBytes.length);
             }
             return new String(insertedSequenceBytes);
