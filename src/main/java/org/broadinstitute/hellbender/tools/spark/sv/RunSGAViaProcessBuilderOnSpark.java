@@ -80,12 +80,13 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     public boolean enableSTDIOCapture = false;
 
     @Argument(doc       = "A threshold that if a successful local assembly took longer than this time (unit: seconds), " +
-                          "the assembly id for it will be extracted and output",
+                          "the assembly id for it will be extracted and output." +
+                          "Setting it to any negative number would turn on logging for all successful assemblies.",
               shortName = "ts",
               fullName  = "timerThreshold",
               optional  = true)
     @Advanced
-    public long timerThresholdForLogging = 60;
+    public long timerThresholdForLogging = -1;
 
     //----------------------------------------------------------------------------------------------------------------//
     // Result-affecting parameters for use in various SGA modules with default values.
@@ -187,7 +188,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
 
             success.filter(entry -> TimeUnit.MILLISECONDS.toSeconds(entry._2().elapsedTime) >= timerThresholdForLogging)
                     .map(entry -> entry._1().toString() + "\t" + TimeUnit.MILLISECONDS.toSeconds(entry._2().elapsedTime) + "seconds")
-                    .coalesce(1).saveAsTextFile(outputDir+"_longOnes"); // coalesce to 1 by being optimistic on few slow assemblies
+                    .coalesce(1).saveAsTextFile(outputDir+"_longOnes");
             success.unpersist();
         }
 
